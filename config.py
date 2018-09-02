@@ -1,6 +1,7 @@
 class Config(object):
     DEBUG = False
     TESTING = False
+    MONGODB_DB = 'matchdb'
     # DATABASE_URI = 'sqlite:///:memory:'
 
 class ProductionConfig(Config):

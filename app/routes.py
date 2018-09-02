@@ -1,41 +1,123 @@
-from flask import jsonify, request
+from flask import jsonify, request, abort
 from flask import render_template
+from marshmallow import ValidationError
 
 from app import app
-from app.models import Device
+from app.models import Device, DeviceSchema, SessionSchema
+
+device_schema = DeviceSchema()
 
 
 @app.route('/')
-@app.route('/index')
+@app.route('/index/')
 def index():
     user = {'username': 'Benjamin'}
     return render_template('index.html', title='Home', user=user)
 
-def get_device(identifier):
-    return Device.objects(vendor_identifier=identifier)
 
-@app.route('/device', methods=['GET'])
+# READ all devices
+@app.route('/devices/', methods=['GET'])
 def get_devices():
     devices = Device.objects
 
-    return jsonify(devices)
+    if devices.count() == 0:
+        abort(404)
 
-@app.route('/device/<identifier>', methods=['GET'])
-def device(identifier):
-    device = get_device(identifier)
+    result, error = device_schema.dump(devices, many=True)
 
-    return jsonify(device)
+    return jsonify({'devices': result})
 
-@app.route('/device/<identifier>', methods=['POST','PUT'])
-def set_device(identifier):
-    device = Device()
 
-    if request.method == 'POST':
-        device = get_device(identifier).first()
+# CREATE single device
+@app.route('/devices/', methods=['POST'])
+def create_device():
+    json_data = request.get_json()
 
-    data = request.get_json()
+    if not json_data:
+        return jsonify({'message': 'No input data provided.'}), 400
 
-    device.name = data["name"]
-    device.save()
+    # Validate and deserialize input
+    try:
+        created_device, errors = device_schema.load(json_data)
+    except ValidationError as err:
+        return jsonify(err.messages), 422
 
-    return jsonify(device)
+    created_device.save()
+
+    return jsonify({'device': created_device})
+
+
+# READ/UPDATE/DELETE single device
+@app.route('/devices/<uuid:identifier>/', methods=['GET'])
+def get_device(identifier):
+    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+
+    result, error = device_schema.dump(device)
+
+    return jsonify({'device': result})
+
+
+# UPDATE single device by vendor_identifier
+@app.route('/devices/<uuid:identifier>/', methods=['PUT'])
+def update_device(identifier):
+    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+
+    json_data = request.get_json()
+
+    if not json_data:
+        return jsonify({'message': 'No input data provided.'}), 400
+
+    # Validate and deserialize input
+    try:
+        updated_device, errors = device_schema.update(device, json_data)
+    except ValidationError as err:
+        return jsonify(err.messages), 422
+
+    updated_device.save()
+
+    return jsonify({'updated_device': device_schema.dump(updated_device)})
+
+
+@app.route('/devices/<uuid:identifier>/', methods=['DELETE'])
+def delete_device(identifier):
+    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+
+    response = {'deleted_device': device_schema.dump(device).data}
+
+    try:
+        device.delete()
+    except Exception as err:
+        return jsonify(type(err).__name__), 422
+
+    return jsonify(response)
+
+
+@app.route('/devices/<identifier>/sessions/', methods=['GET'])
+def get_device_sessions(identifier):
+    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+
+    result, error = SessionSchema().dump(device.sessions, many=True)
+
+    return jsonify({'sessions': result})
+
+
+@app.route('/devices/<identifier>/sessions/', methods=['POST'])
+def add_session(identifier):
+    json_data = request.get_json()
+
+    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+
+    sessions = device.sessions
+
+    try:
+        new_sessions, errors = SessionSchema().load(json_data, many=True)
+    except ValidationError as err:
+        return jsonify(err.messages), 422
+
+    for session in new_sessions:
+        sessions.append(session)
+
+    sessions.save()
+
+    return jsonify({'added_sessions': SessionSchema().dump(new_sessions, many=True)})
+

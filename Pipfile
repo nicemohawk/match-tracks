@@ -7,8 +7,9 @@ name = "pypi"
 flask = "*"
 pymongo = "*"
 mongoengine = "*"
-jsonify = "*"
 flask-mongoengine = "*"
+marshmallow = "*"
+marshmallow-mongoengine = {git = "git://github.com/benlachman/marshmallow-mongoengine.git"}
 
 [dev-packages]
 
