@@ -10,10 +10,13 @@ app.url_map.strict_slashes = False
 env = os.environ.get('ENV', None)
 
 if env == "prod":
+    print("Loading production config")
     app.config.from_object('config.ProductionConfig')
 elif env == "test":
+    print("Loading testing config")
     app.config.from_object('config.TestingConfig')
 else:  # dev
+    print("Loading development config")
     app.config.from_object('config.DevelopmentConfig')
 
 
