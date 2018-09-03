@@ -1,3 +1,6 @@
+import os
+
+
 class Config(object):
     DEBUG = False
     TESTING = False
@@ -5,7 +8,7 @@ class Config(object):
 
 
 class ProductionConfig(Config):
-    pass
+    MONGODB_HOST = os.environ.get('MONGO_URL', None)
 
 
 class DevelopmentConfig(Config):
