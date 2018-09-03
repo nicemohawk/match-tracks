@@ -2,8 +2,8 @@ from flask import jsonify, request, abort
 from flask import render_template
 from marshmallow import ValidationError
 
-from app import app
-from app.models import Device, DeviceSchema, SessionSchema
+from match_tracks import app
+from match_tracks.models import Device, DeviceSchema, SessionSchema
 
 device_schema = DeviceSchema()
 
