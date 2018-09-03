@@ -1,2 +1,4 @@
-# match-track
-Python app to store coordinate paths
+# match-tracks
+
+A Flask app to store coordinate paths.
+
