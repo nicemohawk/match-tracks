@@ -62,7 +62,7 @@ def create_device():
     return jsonify({'device': created_device})
 
 
-# READ/UPDATE/DELETE single device
+# READ single device
 @app.route('/devices/<uuid:identifier>/', methods=['GET'])
 def get_device(identifier):
     device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
@@ -133,6 +133,7 @@ def add_session(identifier):
         sessions.append(session)
 
     sessions.save()
+    result, error = SessionSchema().dump(new_sessions, many=True)
 
-    return jsonify({'added_sessions': SessionSchema().dump(new_sessions, many=True)})
+    return jsonify({'added_sessions': result})
 

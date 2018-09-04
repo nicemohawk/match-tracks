@@ -7,17 +7,8 @@ db = MongoEngine()
 
 
 class Session(db.EmbeddedDocument):
-    data = db.LineStringField()
+    track = db.LineStringField()
     recorded_at = db.DateTimeField(required=True, default=datetime.now)
-
-    def __init__(self, data=None, recorded_at=None, *args, **kwargs):
-        db.EmbeddedDocument.__init__(self, args, kwargs)
-
-        if data is not None:
-            self.data = data
-
-        if recorded_at is not None:
-            self.recorded_at = recorded_at
 
 
 class Device(db.Document):
