@@ -1,17 +1,31 @@
-from flask import jsonify, request, abort
-from flask import render_template
+from flask import jsonify, request, abort, render_template
+from flask_httpauth import HTTPTokenAuth
 from marshmallow import ValidationError
 
 from match_tracks import app
 from match_tracks.models import Device, DeviceSchema, SessionSchema
 
 device_schema = DeviceSchema()
+auth = HTTPTokenAuth(scheme='APIKey')
+
+
+tokens = {
+    "hi-bob": "bob"
+}
+
+# token verification method
+@auth.verify_token
+def verify_token(token):
+    if token in tokens:
+        # g.current_user = tokens[token]
+        return True
+    return False
 
 
 @app.route('/')
 @app.route('/index/')
 def index():
-    user = {'username': 'Benjamin'}
+    user = {'username': 'Human'}
     return render_template('index.html', title='Home', user=user)
 
 
@@ -30,6 +44,7 @@ def get_devices():
 
 # CREATE single device
 @app.route('/devices/', methods=['POST'])
+@auth.login_required
 def create_device():
     json_data = request.get_json()
 
