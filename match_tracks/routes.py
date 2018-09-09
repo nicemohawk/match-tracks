@@ -74,13 +74,14 @@ def get_device(identifier):
 
 # UPDATE single device by vendor_identifier
 @app.route('/devices/<uuid:identifier>/', methods=['PUT'])
+@auth.login_required
 def update_device(identifier):
     device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
 
     json_data = request.get_json()
 
     if not json_data:
-        return jsonify({'message': 'No input data provided.'}), 400
+        return jsonify({'result': 'No input data provided.'}), 400
 
     # Validate and deserialize input
     try:
@@ -94,6 +95,7 @@ def update_device(identifier):
 
 
 @app.route('/devices/<uuid:identifier>/', methods=['DELETE'])
+@auth.login_required
 def delete_device(identifier):
     device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
 
@@ -117,8 +119,12 @@ def get_device_sessions(identifier):
 
 
 @app.route('/devices/<identifier>/sessions/', methods=['POST'])
+@auth.login_required
 def add_session(identifier):
-    json_data = request.get_json()
+    json_data = request.get_json()['sessions']
+
+    if not json_data:
+        return jsonify({'result': 'No input data provided.'}), 400
 
     device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
 

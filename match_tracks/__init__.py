@@ -9,6 +9,7 @@ app.url_map.strict_slashes = False
 
 env = os.environ.get('ENV', None)
 
+
 if env == "prod":
     print("Loading production config")
     app.config.from_object('config.ProductionConfig')
@@ -24,11 +25,6 @@ try:
     app.config.from_pyfile('config.py')
 except FileNotFoundError as err:
     print("No instance config file found")
-
-
-# app.config['MONGODB_SETTINGS'] = {
-#         'host': os.environ['MONGO_URL'],
-#         }
 
 db = MongoEngine(app)
 
