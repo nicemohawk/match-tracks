@@ -3,7 +3,7 @@ from flask_httpauth import HTTPTokenAuth
 from marshmallow import ValidationError
 
 from match_tracks import app
-from match_tracks.models import Device, DeviceSchema, SessionSchema
+from match_tracks.models import Device, DeviceSchema, SessionSchema, FieldSchema
 
 device_schema = DeviceSchema()
 auth = HTTPTokenAuth(scheme='APIKey')
@@ -143,3 +143,37 @@ def add_session(identifier):
 
     return jsonify({'added_sessions': result})
 
+
+@app.route('/devices/<identifier>/fields/', methods=['GET'])
+def get_device_fields(identifier):
+    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+
+    result, error = FieldSchema().dump(device.fields, many=True)
+
+    return jsonify({'fields': result})
+
+
+@app.route('/devices/<identifier>/fields/', methods=['POST'])
+@auth.login_required
+def add_fields(identifier):
+    json_data = request.get_json()['fields']
+
+    if not json_data:
+        return jsonify({'result': 'No input data provided.'}), 400
+
+    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+
+    fields = device.fields
+
+    try:
+        new_fields, errors = FieldSchema().load(json_data, many=True)
+    except ValidationError as err:
+        return jsonify(err.messages), 422
+
+    for field in new_fields:
+        fields.append(field)
+
+    fields.save()
+    result, error = FieldSchema().dump(new_fields, many=True)
+
+    return jsonify({'added_fields': result})

@@ -18,5 +18,4 @@ match-tracks is configured to deploy via [dokku](https://github.com/dokku/dokku)
 
 2. Push the repo: `git push dokku`
 
-3. Set any instance environment variables on the **remote** service in `instance/config.py`
-
+3. Set any instance environment variables (like API tokens) on the **remote** service in `instance/config.py`
