@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/match-track.iml" filepath="$PROJECT_DIR$/.idea/match-track.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/match-tracks.iml" filepath="$PROJECT_DIR$/.idea/match-tracks.iml" />
     </modules>
   </component>
 </project>

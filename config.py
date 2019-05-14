@@ -1,14 +1,19 @@
+import os
+
+
 class Config(object):
     DEBUG = False
     TESTING = False
-    # DATABASE_URI = 'sqlite:///:memory:'
+    MONGODB_DB = 'matchdb'
+
 
 class ProductionConfig(Config):
-    HOST = 'http://google.com'
-    # DATABASE_URI = 'mysql://user@localhost/foo'
+    MONGODB_HOST = os.environ.get('MONGO_URL', None)
+
 
 class DevelopmentConfig(Config):
     DEBUG = True
+
 
 class TestingConfig(Config):
     TESTING = True
