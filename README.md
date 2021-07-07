@@ -2,15 +2,17 @@
 
 A Flask app to store coordinate paths.
 
-####Setup: 
+#### Setup: 
 
-1. Install mongodb: `brew install mongodb`
+1. Install mongodb: `brew tap mongodb/brew` then `brew install mongo`. ([full instructions](https://docs.mongodb.com/manual/tutorial/install-mongodb-on-os-x/))
+   
+2. Start `mongod`: follow directions at the end of brew's installation based on your usage (as a service, or single shot).
 
-2. Install dependencies: `pipenv install`
+3. Install dependencies: `pipenv sync`
 
-3. Run locally: `pipenv run python run.py`
+4. Run locally: `pipenv run python run.py`
 
-####To deploy:
+#### To deploy:
 
 match-tracks is configured to deploy via [dokku](https://github.com/dokku/dokku), a Docker container management service.
 

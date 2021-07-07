@@ -9,11 +9,11 @@ pymongo = "*"
 mongoengine = "*"
 flask-mongoengine = "*"
 marshmallow = "*"
-marshmallow-mongoengine = {git = "git://github.com/benlachman/marshmallow-mongoengine.git"}
 gunicorn = "*"
 flask-httpauth = "*"
+marshmallow-mongoengine = {git = "git://github.com/benlachman/marshmallow-mongoengine.git"}
 
 [dev-packages]
 
 [requires]
-python_version = "3.7"
+python_version = "3.9"
