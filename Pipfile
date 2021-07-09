@@ -12,6 +12,7 @@ marshmallow = "*"
 gunicorn = "*"
 flask-httpauth = "*"
 marshmallow-mongoengine = {git = "git://github.com/benlachman/marshmallow-mongoengine.git"}
+six = "*"
 
 [dev-packages]
 

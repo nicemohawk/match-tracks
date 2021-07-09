@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "fdea607da747bfc1403a215b62c19244d489c5dd43b651dc2c2d792d353a3caa"
+            "sha256": "e530c8b84d5f0ee0a5e70b8a088b9c50bdb336ecc266ed910901eb405f285daf"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -153,7 +153,7 @@
         },
         "marshmallow-mongoengine": {
             "git": "git://github.com/benlachman/marshmallow-mongoengine.git",
-            "ref": "2c975a884fd4031e2b68ab7140d8ecde59efe5ad"
+            "ref": "72787fdb5e9d598821df614c676642842ec44b0d"
         },
         "mongoengine": {
             "hashes": [
@@ -232,6 +232,14 @@
             ],
             "index": "pypi",
             "version": "==3.11.4"
+        },
+        "six": {
+            "hashes": [
+                "sha256:1e61c37477a1626458e36f7b1d82aa5c9b094fa4802892072e49de9c60c4c926",
+                "sha256:8abb2f1d86890a2dfb989f9a77cfcfd3e47c2a354b01111771326f8aa26e0254"
+            ],
+            "index": "pypi",
+            "version": "==1.16.0"
         },
         "werkzeug": {
             "hashes": [
