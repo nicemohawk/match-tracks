@@ -418,3 +418,106 @@ def test_batch_auto_join_is_all_or_nothing(client, admin_headers, device_key):
     assert response.status_code == 400
     assert DeviceTeamMembership.objects(device_id=member_device,
                                         team_code='v2-batch-foreign').count() == 0
+
+
+# --- Codex second-viewpoint review regressions --------------------------------
+
+def test_foreign_team_product_grants_nothing(client, admin_headers, device_key, app):
+    from datetime import datetime, timedelta
+    from match_tracks.entitlements import has_active_team_entitlement
+    from match_tracks.models import Entitlement
+
+    device_uuid = register_device(client, admin_headers)
+    device_headers = device_key('v2-codex-product-key', device_uuid)
+
+    # A receipt for another app's ".team." product is rejected outright.
+    app.config['ENTITLEMENT_VERIFIER'] = lambda jws: {
+        'product_id': 'com.attacker.app.team.monthly',
+        'expires_at': datetime.utcnow() + timedelta(days=365),
+        'environment': 'Production',
+    }
+    response = client.post(f'/devices/{device_uuid}/receipt',
+                           json={'jws': 'x.y.z'}, headers=device_headers)
+    assert response.status_code == 400
+
+    # Even a directly-inserted foreign entitlement row grants nothing.
+    Entitlement(device_id=device_uuid, product_id='com.attacker.app.team.monthly',
+                expires_at=datetime.utcnow() + timedelta(days=365)).save()
+    with app.app_context():
+        assert has_active_team_entitlement(device_uuid) is False
+
+
+def test_wrong_bundle_receipt_is_rejected(app):
+    import base64
+    import json as json_module
+    from match_tracks.entitlements import InvalidReceipt, default_jws_verifier
+    import pytest as pytest_module
+
+    def encode(section):
+        return base64.urlsafe_b64encode(
+            json_module.dumps(section).encode()).rstrip(b'=').decode()
+
+    foreign_bundle_jws = '.'.join([
+        encode({'alg': 'ES256', 'x5c': ['ZmFrZQ==']}),
+        encode({'productId': 'com.nicemohawk.MatchTracker.team.monthly',
+                'expiresDate': 4102444800000, 'environment': 'Production',
+                'bundleId': 'com.attacker.app'}),
+        'c2ln',
+    ])
+    with app.app_context():
+        app.config['ENTITLEMENT_ALLOW_UNVERIFIED'] = True
+        with pytest_module.raises(InvalidReceipt):
+            default_jws_verifier(foreign_bundle_jws)
+
+
+def test_comment_id_replay_across_matches_conflicts(client, admin_headers, device_key):
+    from match_tracks.models import Match
+
+    device_uuid = register_device(client, admin_headers)
+    device_headers = device_key('v2-codex-comment-key', device_uuid)
+    other_device = register_device(client, admin_headers)
+    other_headers = device_key('v2-codex-comment-other', other_device)
+
+    private_match = new_uuid()
+    Match(uuid=private_match, device_id=device_uuid, team_code=None).save()
+    other_match = new_uuid()
+    Match(uuid=other_match, device_id=other_device, team_code=None).save()
+
+    secret_comment_id = new_uuid()
+    assert client.post(f'/matches/{private_match}/comments',
+                       json={'id': secret_comment_id, 'body': 'secret plan'},
+                       headers=device_headers).status_code == 201
+
+    # Replaying the id against a DIFFERENT match must not echo the secret.
+    response = client.post(f'/matches/{other_match}/comments',
+                           json={'id': secret_comment_id, 'body': 'probe'},
+                           headers=other_headers)
+    assert response.status_code == 409
+    assert 'secret plan' not in response.get_data(as_text=True)
+
+
+def test_session_and_field_uploads_are_actor_scoped(client, admin_headers, device_key):
+    latitude, longitude = _venue(9)
+    victim_device = register_device(client, admin_headers)
+    device_key('v2-codex-victim-key', victim_device)
+    attacker_device = register_device(client, admin_headers)
+    attacker_headers = device_key('v2-codex-attacker-key', attacker_device)
+
+    payload = make_extended_session_payload(
+        new_uuid(), '2026-07-13T09:00:00Z',
+        make_match_track(latitude, longitude, num_points=10),
+        team_code='v2-codex-hijack-team')
+    assert client.post(f'/devices/{victim_device}/sessions/',
+                       json={'sessions': [payload]},
+                       headers=attacker_headers).status_code == 403
+
+    field_payload = make_field_payload(new_uuid(), '2026-07-13T09:00:00Z',
+                                       make_field_outline(latitude, longitude))
+    assert client.post(f'/devices/{victim_device}/fields/',
+                       json={'fields': [field_payload]},
+                       headers=attacker_headers).status_code == 403
+
+    # Admin keys keep the V1 ability to upload for any device.
+    assert client.post(f'/devices/{victim_device}/sessions/',
+                       json={'sessions': [payload]},
+                       headers=admin_headers).status_code == 200

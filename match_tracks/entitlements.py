@@ -20,8 +20,22 @@ from match_tracks.models import Entitlement
 
 entitlements_blueprint = Blueprint('entitlements', __name__)
 
-TEAM_PRODUCT_FRAGMENT = '.team.'
 TIMESTAMP_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
+
+# Only OUR products grant features: a valid Apple-signed receipt for another
+# app's ".team." product must not unlock anything here.
+DEFAULT_TEAM_PRODUCT_IDS = frozenset({'com.nicemohawk.MatchTracker.team.monthly'})
+DEFAULT_BUNDLE_ID = 'com.nicemohawk.MatchTracker'
+
+
+def allowed_team_product_ids():
+    """The exact product ids that grant the team entitlement."""
+    configured = current_app.config.get('ENTITLEMENT_ALLOWED_TEAM_PRODUCT_IDS')
+    return set(configured) if configured else set(DEFAULT_TEAM_PRODUCT_IDS)
+
+
+def expected_bundle_id():
+    return current_app.config.get('ENTITLEMENT_BUNDLE_ID', DEFAULT_BUNDLE_ID)
 
 
 class VerifierUnavailable(Exception):
@@ -60,6 +74,14 @@ def default_jws_verifier(jws_string):
         environment = payload.get('environment')
     except (ValueError, KeyError, TypeError) as parse_error:
         raise InvalidReceipt(str(parse_error))
+
+    # Bind the transaction to THIS app: an Apple-signed receipt for another
+    # bundle must not be replayable here. (StoreKit 2 transactions carry
+    # bundleId; tolerate its absence only for injected test verifiers.)
+    payload_bundle_id = payload.get('bundleId')
+    if payload_bundle_id is not None and payload_bundle_id != expected_bundle_id():
+        raise InvalidReceipt(
+            f'receipt is for bundle {payload_bundle_id!r}, not this app')
 
     allow_unverified = current_app.config.get('ENTITLEMENT_ALLOW_UNVERIFIED', False)
 
@@ -121,13 +143,22 @@ def _load_pinned_root_certificates():
 
 def _verify_jws_signature(header, header_segment, payload_segment,
                           signature_segment, trusted_roots):
-    """Verify the x5c chain to a pinned root, then the ES256 JWS signature."""
+    """Verify the x5c chain to a pinned root, then the ES256 JWS signature.
+
+    Beyond raw signatures, every certificate must be inside its validity
+    window and every issuer must be a CA (basicConstraints), and the JWS
+    ``alg`` is pinned to ES256 — StoreKit 2's only algorithm — to prevent
+    algorithm-confusion tricks.
+    """
     import base64 as base64_module
 
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+
+    if header.get('alg') != 'ES256':
+        raise InvalidReceipt(f"unsupported JWS alg {header.get('alg')!r}")
 
     try:
         chain = [x509.load_der_x509_certificate(base64_module.b64decode(entry))
@@ -139,10 +170,14 @@ def _verify_jws_signature(header, header_segment, payload_segment,
     except Exception as parse_error:
         raise InvalidReceipt(f'malformed x5c chain: {parse_error}')
 
+    for certificate in chain:
+        _require_certificate_currently_valid(certificate)
+
     try:
-        # Each certificate must be signed by the next one up; the last link
-        # must be signed by (or be) a pinned root.
+        # Each certificate must be signed by the next one up (which must be a
+        # CA); the last link must be signed by (or be) a pinned root.
         for child, issuer in zip(chain, chain[1:]):
+            _require_certificate_authority(issuer)
             _verify_certificate_signature(child, issuer)
         top_of_chain = chain[-1]
         trusted = False
@@ -151,6 +186,7 @@ def _verify_jws_signature(header, header_segment, payload_segment,
                 trusted = True
                 break
             try:
+                _require_certificate_authority(root)
                 _verify_certificate_signature(top_of_chain, root)
                 trusted = True
                 break
@@ -174,6 +210,32 @@ def _verify_jws_signature(header, header_segment, payload_segment,
         raise InvalidReceipt(f'signature verification failed: {verification_error}')
 
 
+def _require_certificate_currently_valid(certificate):
+    """Raise InvalidReceipt when `certificate` is outside its validity window."""
+    now = datetime.utcnow()
+    try:  # cryptography >= 42 deprecates the naive properties
+        not_before = certificate.not_valid_before_utc.replace(tzinfo=None)
+        not_after = certificate.not_valid_after_utc.replace(tzinfo=None)
+    except AttributeError:
+        not_before = certificate.not_valid_before
+        not_after = certificate.not_valid_after
+    if now < not_before or now > not_after:
+        raise InvalidReceipt('certificate in x5c chain is expired or not yet valid')
+
+
+def _require_certificate_authority(certificate):
+    """Raise InvalidReceipt unless `certificate` is marked as a CA."""
+    from cryptography import x509
+
+    try:
+        basic_constraints = certificate.extensions.get_extension_for_class(
+            x509.BasicConstraints).value
+    except Exception:
+        raise InvalidReceipt('issuer certificate lacks basicConstraints')
+    if not basic_constraints.ca:
+        raise InvalidReceipt('issuer certificate is not a CA')
+
+
 def _verify_certificate_signature(certificate, issuer):
     """Raise unless `certificate` was signed by `issuer`'s key (EC or RSA)."""
     from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
@@ -192,12 +254,14 @@ def _verify_certificate_signature(certificate, issuer):
 
 
 def has_active_team_entitlement(device_id):
-    """True when the device holds an unexpired team subscription."""
+    """True when the device holds an unexpired subscription to one of OUR
+    team products (exact product-id match — never a substring test)."""
     if not device_id:
         return False
     now = datetime.utcnow()
+    team_products = allowed_team_product_ids()
     for entitlement in Entitlement.objects(device_id=device_id.lower()):
-        if TEAM_PRODUCT_FRAGMENT in (entitlement.product_id or ''):
+        if entitlement.product_id in team_products:
             if entitlement.expires_at and entitlement.expires_at > now:
                 return True
     return False
@@ -217,9 +281,10 @@ def require_team_entitlement():
 
 def _team_entitlement_json(device_id):
     now = datetime.utcnow()
+    team_products = allowed_team_product_ids()
     newest_expiry = None
     for entitlement in Entitlement.objects(device_id=device_id):
-        if TEAM_PRODUCT_FRAGMENT in (entitlement.product_id or ''):
+        if entitlement.product_id in team_products:
             if newest_expiry is None or (entitlement.expires_at
                                          and entitlement.expires_at > newest_expiry):
                 newest_expiry = entitlement.expires_at
@@ -248,6 +313,11 @@ def submit_receipt(identifier):
     except VerifierUnavailable:
         return jsonify({'reason': 'verifier_unavailable'}), 503
     except Exception:
+        return jsonify({'reason': 'invalid_receipt'}), 400
+
+    # Store only products this app sells; a foreign product id — even inside a
+    # legitimately signed receipt — grants nothing and is rejected outright.
+    if verified['product_id'] not in allowed_team_product_ids():
         return jsonify({'reason': 'invalid_receipt'}), 400
 
     device_id = str(identifier).lower()

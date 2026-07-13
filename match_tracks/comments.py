@@ -138,6 +138,11 @@ def post_comment(match_uuid):
 
     existing = MatchComment.objects(uuid=comment_id).first()
     if existing is not None:
+        # Idempotent replay only applies within the same match: echoing a
+        # comment that lives on a different match would leak its content to
+        # anyone who learned the id.
+        if existing.match_uuid != str(match_uuid).lower():
+            return jsonify({'reason': 'id_conflict'}), 409
         return jsonify({'comment': _comment_json(existing)}), 200
 
     body = json_data.get('body')

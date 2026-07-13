@@ -154,6 +154,14 @@ def add_session(identifier):
     if not json_data:
         return jsonify({'result': 'No input data provided.'}), 400
 
+    # V2 hardening: a device key may only upload sessions as itself (admin
+    # keys may act for any device) — otherwise one device could fabricate
+    # matches, player state, and team auto-joins for another.
+    from match_tracks.memberships import actor_denial
+    denial = actor_denial(identifier)
+    if denial:
+        return denial
+
     device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
     device_id = device.vendor_identifier.lower()
 
@@ -311,6 +319,11 @@ def add_fields(identifier):
 
     if not json_data:
         return jsonify({'result': 'No input data provided.'}), 400
+
+    from match_tracks.memberships import actor_denial
+    denial = actor_denial(identifier)
+    if denial:
+        return denial
 
     device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
 

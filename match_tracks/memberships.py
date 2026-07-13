@@ -6,6 +6,7 @@ counts as an implicit membership.
 """
 
 from flask import Blueprint, jsonify, request
+from mongoengine import NotUniqueError
 
 from match_tracks.auth import auth, current_principal, effective_device_id
 from match_tracks.models import DeviceTeamMembership, Player, Team
@@ -67,7 +68,11 @@ def join_team(identifier):
     if existing is not None:
         return jsonify({'joined': False, 'team_code': team_code}), 200
 
-    DeviceTeamMembership(device_id=device_id, team_code=team_code).save()
+    try:
+        DeviceTeamMembership(device_id=device_id, team_code=team_code).save()
+    except NotUniqueError:
+        # A concurrent identical join won the race — still idempotent success.
+        return jsonify({'joined': False, 'team_code': team_code}), 200
     return jsonify({'joined': True, 'team_code': team_code}), 201
 
 
