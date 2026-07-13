@@ -1,0 +1,78 @@
+name: MatchTracks
+options:
+  bundleIdPrefix: com.nicemohawk
+  deploymentTarget:
+    iOS: "18.0"
+    watchOS: "11.0"
+  createIntermediateGroups: true
+
+packages:
+  MatchTracksKit:
+    path: Packages/MatchTracksKit
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  MatchTracks:
+    type: application
+    platform: iOS
+    sources:
+      - iOS
+    dependencies:
+      - package: MatchTracksKit
+      - target: MatchTracksWatch
+    info:
+      path: iOS/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSLocationWhenInUseUsageDescription: Match Tracks uses your location to map your movement on the field.
+        NSHealthShareUsageDescription: Match Tracks reads workout, heart rate, and route data recorded during your matches.
+        NSHealthUpdateUsageDescription: Match Tracks saves your match workouts to Health.
+        CFBundleDisplayName: Match Tracks
+    entitlements:
+      path: iOS/MatchTracks.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+
+  MatchTracksWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - Watch
+    dependencies:
+      - package: MatchTracksKit
+    settings:
+      base:
+        INFOPLIST_KEY_CFBundleDisplayName: Match Tracks
+    info:
+      path: Watch/Info.plist
+      properties:
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: com.nicemohawk.MatchTracks
+        WKBackgroundModes: [workout-processing, location]
+        NSLocationWhenInUseUsageDescription: Match Tracks uses your location during a match to map your movement on the field.
+        NSHealthShareUsageDescription: Match Tracks reads heart rate and workout data during your matches.
+        NSHealthUpdateUsageDescription: Match Tracks records your match as a workout.
+        CFBundleDisplayName: Match Tracks
+    entitlements:
+      path: Watch/MatchTracksWatch.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+
+schemes:
+  MatchTracks:
+    build:
+      targets:
+        MatchTracks: all
+    run:
+      config: Debug
+  MatchTracksWatch:
+    build:
+      targets:
+        MatchTracksWatch: all
+    run:
+      config: Debug
