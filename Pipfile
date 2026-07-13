@@ -4,17 +4,20 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-flask = "*"
-pymongo = "*"
-mongoengine = "*"
-flask-mongoengine = "*"
-marshmallow = "*"
-gunicorn = "*"
-flask-httpauth = "*"
-marshmallow-mongoengine = {git = "git://github.com/benlachman/marshmallow-mongoengine.git"}
-six = "*"
+flask = "==2.0.1"
+werkzeug = "==2.0.1"
+pymongo = "==3.11.4"
+mongoengine = "==0.23.1"
+flask-mongoengine = "==1.0.0"
+marshmallow = "==3.12.2"
+gunicorn = "==20.1.0"
+flask-httpauth = "==4.4.0"
+marshmallow-mongoengine = {git = "https://github.com/benlachman/marshmallow-mongoengine.git", ref = "72787fdb5e9d598821df614c676642842ec44b0d"}
+six = "==1.16.0"
 
 [dev-packages]
+pytest = "*"
+mongomock = "*"
 
 [requires]
 python_version = "3.9"
