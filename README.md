@@ -101,6 +101,13 @@ status codes identical to the intended legacy contract.
 
 4. Run locally: `pipenv run python run.py`
 
+   In development (the default when `ENV` is unset), the server runs in **dev
+   auth mode**: any `Authorization: APIKey <anything>` header is accepted as an
+   admin principal, so the watch/iOS app can talk to a local server without
+   provisioning keys. This is hard-disabled whenever `ENV=prod`, and can be
+   turned off locally with `DEV_ACCEPT_ANY_API_KEY=0`. Never enable it on a
+   deployed instance.
+
 ## Tests
 
 Tests run against an in-memory mongomock database — no mongod needed:

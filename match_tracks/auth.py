@@ -16,6 +16,8 @@ different team, are denied. This keeps a device from reading another team's
 match data just because it knows (or guesses) that team's code.
 """
 
+import os
+
 from flask import current_app, request
 from flask_httpauth import HTTPTokenAuth
 
@@ -24,6 +26,36 @@ from flask_httpauth import HTTPTokenAuth
 DEFAULT_API_TOKENS = {'hi-bob': 'bob'}
 
 auth = HTTPTokenAuth(scheme='APIKey')
+
+# One-shot guard so the loud dev-mode warning is logged only once per process.
+_dev_mode_warning_emitted = False
+
+
+def dev_accept_any_key_enabled():
+    """True when the "accept any APIKey" local-testing override is active.
+
+    Enabled by the ``DEV_ACCEPT_ANY_API_KEY`` config flag (on by default under
+    ``DevelopmentConfig``). Hard-disabled whenever the process runs under the
+    production environment (``ENV=prod``) regardless of config, so a stray flag
+    in an instance config can never open authentication on a deployed server.
+    """
+    if os.environ.get('ENV') == 'prod':
+        return False
+    return bool(current_app.config.get('DEV_ACCEPT_ANY_API_KEY'))
+
+
+def _warn_dev_mode_once():
+    global _dev_mode_warning_emitted
+    if _dev_mode_warning_emitted:
+        return
+    _dev_mode_warning_emitted = True
+    try:
+        current_app.logger.warning(
+            'DEV_ACCEPT_ANY_API_KEY is ON: every "Authorization: APIKey ..." '
+            'value is accepted as an admin principal. Local testing only — this '
+            'must never run in production.')
+    except Exception:
+        pass
 
 
 @auth.verify_token
@@ -38,6 +70,14 @@ def verify_token(token):
     device_keys = current_app.config.get('DEVICE_API_KEYS', {})
     if token in device_keys:
         return {'key': token, 'admin': False, 'device_id': device_keys[token]}
+
+    # Local-testing escape hatch: any otherwise-unknown key is accepted as an
+    # admin principal so the watch/iOS app can hit a local server without
+    # provisioning keys. Known keys above keep their real identity, so
+    # device-scoped testing still works when device keys ARE configured.
+    if dev_accept_any_key_enabled():
+        _warn_dev_mode_once()
+        return {'key': token, 'admin': True, 'device_id': None, 'dev': True}
 
     return None
 

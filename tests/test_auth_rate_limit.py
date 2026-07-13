@@ -173,3 +173,63 @@ def test_rate_limit_refill_math_is_deterministic(app, client, admin_headers, mon
 
     assert client.post(path, headers=admin_headers).status_code == 200
     assert client.post(path, headers=admin_headers).status_code == 429
+
+
+# --- Dev mode: accept any APIKey (local testing only) -------------------------
+
+def test_unknown_key_rejected_when_dev_mode_off(app):
+    """Baseline: with the override off (the default), unknown keys are 401."""
+    path = _register_protected_route(app)
+    assert app.config.get('DEV_ACCEPT_ANY_API_KEY') in (None, False)
+    client = app.test_client()
+    resp = client.get(path, headers={'Authorization': 'APIKey totally-made-up'})
+    assert resp.status_code == 401
+
+
+def test_dev_mode_accepts_any_key_as_admin(app):
+    """With the override on, any unknown key authenticates as an admin dev principal."""
+    from match_tracks import auth as auth_module
+    auth_module._dev_mode_warning_emitted = False
+    app.config['DEV_ACCEPT_ANY_API_KEY'] = True
+    path = _register_protected_route(app)
+    try:
+        client = app.test_client()
+        resp = client.get(path, headers={'Authorization': 'APIKey anything-goes'})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body['admin'] is True
+        assert body['device_id'] is None
+        assert body['key'] == 'anything-goes'
+        # An empty token is still rejected even in dev mode.
+        assert client.get(path, headers={'Authorization': 'APIKey '}).status_code == 401
+    finally:
+        app.config['DEV_ACCEPT_ANY_API_KEY'] = False
+
+
+def test_dev_mode_preserves_real_identity_of_known_keys(app, device_key):
+    """Configured device keys keep their device identity even with dev mode on."""
+    app.config['DEV_ACCEPT_ANY_API_KEY'] = True
+    device_uuid = '11111111-2222-3333-4444-555555555555'
+    headers = device_key('a-real-device-key', device_uuid)
+    path = _register_protected_route(app)
+    try:
+        resp = app.test_client().get(path, headers=headers)
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body['admin'] is False
+        assert body['device_id'] == device_uuid
+    finally:
+        app.config['DEV_ACCEPT_ANY_API_KEY'] = False
+
+
+def test_dev_mode_hard_disabled_under_prod_env(app, monkeypatch):
+    """ENV=prod overrides the flag: an unknown key is rejected even if the
+    config accidentally sets DEV_ACCEPT_ANY_API_KEY=True on a prod box."""
+    monkeypatch.setenv('ENV', 'prod')
+    app.config['DEV_ACCEPT_ANY_API_KEY'] = True
+    path = _register_protected_route(app)
+    try:
+        resp = app.test_client().get(path, headers={'Authorization': 'APIKey anything-goes'})
+        assert resp.status_code == 401
+    finally:
+        app.config['DEV_ACCEPT_ANY_API_KEY'] = False
