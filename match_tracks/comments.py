@@ -11,7 +11,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request
 
 from match_tracks import entitlements, memberships
-from match_tracks.auth import auth, effective_device_id
+from match_tracks.auth import auth, current_principal, effective_device_id
 from match_tracks.models import Match, MatchComment, Player
 from match_tracks.privacy import display_name, player_display_name
 from match_tracks.rate_limit import rate_limited
@@ -52,6 +52,25 @@ def _load_match_or_404(match_uuid):
     return match, None
 
 
+def _comment_access_denial(match):
+    """None when the caller may see this match's comments; else (response, 403).
+
+    Team matches are scoped to team members. Team-less matches have no
+    members, so only the match's own device (or an admin) may touch their
+    comments — otherwise any authenticated device could read or write another
+    player's private per-match chat.
+    """
+    if match.team_code:
+        return memberships.require_member(match.team_code)
+
+    principal = current_principal()
+    if principal and principal.get('admin'):
+        return None
+    if effective_device_id() == match.device_id:
+        return None
+    return jsonify({'reason': 'not_a_member'}), 403
+
+
 # LIST comments for a match (oldest first, paginated)
 @comments_blueprint.route('/matches/<match_uuid>/comments', methods=['GET'])
 @auth.login_required
@@ -66,10 +85,9 @@ def list_comments(match_uuid):
     if error:
         return error
 
-    if match.team_code:
-        member_denial = memberships.require_member(match.team_code)
-        if member_denial:
-            return member_denial
+    access_denial = _comment_access_denial(match)
+    if access_denial:
+        return access_denial
 
     query = MatchComment.objects(
         match_uuid=str(match_uuid).lower(), deleted=False).order_by('posted_at')
@@ -81,11 +99,9 @@ def list_comments(match_uuid):
             return jsonify({'reason': 'unknown_after'}), 400
         query = query.filter(posted_at__gt=after_comment.posted_at)
 
+    # Clamp into [1, MAX_LIMIT]: .limit(0) would mean "no limit" in mongo.
     limit = request.args.get('limit', default=DEFAULT_LIMIT, type=int)
-    if limit > MAX_LIMIT:
-        limit = MAX_LIMIT
-    if limit < 0:
-        limit = 0
+    limit = max(1, min(limit, MAX_LIMIT))
 
     comments = [_comment_json(comment) for comment in query.limit(limit)]
     return jsonify({'comments': comments})
@@ -107,10 +123,9 @@ def post_comment(match_uuid):
     if error:
         return error
 
-    if match.team_code:
-        member_denial = memberships.require_member(match.team_code)
-        if member_denial:
-            return member_denial
+    access_denial = _comment_access_denial(match)
+    if access_denial:
+        return access_denial
 
     entitlement_denial = entitlements.require_team_entitlement()
     if entitlement_denial:
@@ -126,7 +141,7 @@ def post_comment(match_uuid):
         return jsonify({'comment': _comment_json(existing)}), 200
 
     body = json_data.get('body')
-    if not body or not str(body).strip():
+    if not isinstance(body, str) or not body.strip():
         return jsonify({'reason': 'body_required'}), 400
     if len(body) > MAX_BODY_LENGTH:
         return jsonify({'reason': 'body_too_long'}), 400

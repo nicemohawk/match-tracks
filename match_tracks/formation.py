@@ -29,7 +29,7 @@ from flask import Blueprint, jsonify, request
 
 from match_tracks import memberships, privacy
 from match_tracks.auth import auth
-from match_tracks.models import Match, Player
+from match_tracks.models import Match, Player, Team
 from match_tracks.rate_limit import rate_limited
 
 formation_blueprint = Blueprint('formation', __name__)
@@ -365,6 +365,18 @@ def get_formation(code):
         window_days = DEFAULT_WINDOW_DAYS
 
     device_means = _collect_player_means(code, window_days)
+
+    # Minors privacy: players on consent-gated teams stay out of the formation
+    # (name AND position) until a guardian has acknowledged consent.
+    team = Team.objects(code=code).first()
+    if team is not None and team.requires_consent:
+        device_means = {
+            device_id: mean_point
+            for device_id, mean_point in device_means.items()
+            if not privacy.consent_blocked(
+                Player.objects(device_id=device_id).first(), team)
+        }
+
     if len(device_means) < MINIMUM_PLAYERS:
         return jsonify({'reason': 'insufficient_data'}), 404
 
@@ -392,7 +404,9 @@ def get_formation(code):
     slots = []
     for player_index, device_id in enumerate(ordered_device_ids):
         player = Player.objects(device_id=device_id).first()
-        player_name = privacy.player_display_name(player) or device_id[:8]
+        # No fabricated fallback: leaking a device-id fragment would bypass
+        # the display-name privacy rules; clients render anonymous slots.
+        player_name = privacy.player_display_name(player)
         aligned_x, aligned_y = best_aligned_points[player_index]
         assigned_slot = best_template[best_assignment[player_index]]
         slots.append({

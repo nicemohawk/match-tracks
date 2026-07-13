@@ -38,9 +38,18 @@ def _base64url_decode(segment):
 
 
 def default_jws_verifier(jws_string):
-    """Decode (and, when possible, verify) a StoreKit 2 signed transaction.
+    """Decode and verify a StoreKit 2 signed transaction.
 
     Returns ``{'product_id', 'expires_at' (datetime), 'environment'}``.
+
+    Security model: a JWS is only trusted when its x5c certificate chain
+    terminates at a PINNED root certificate loaded from the PEM file(s) at
+    ``ENTITLEMENT_APPLE_ROOT_CERTS_PATH`` (deployments bundle Apple's root
+    CAs there). Verifying against the leaf certificate alone would trust
+    whatever certificate the sender minted, so without pinned roots (or the
+    ``cryptography`` package) strict mode refuses with VerifierUnavailable
+    rather than pretending to verify. ``ENTITLEMENT_ALLOW_UNVERIFIED=True``
+    (development only) skips signature checking entirely.
     """
     try:
         header_segment, payload_segment, signature_segment = jws_string.split('.')
@@ -52,40 +61,134 @@ def default_jws_verifier(jws_string):
     except (ValueError, KeyError, TypeError) as parse_error:
         raise InvalidReceipt(str(parse_error))
 
-    try:
-        from cryptography import x509
-        from cryptography.hazmat.primitives.asymmetric import ec
-        from cryptography.hazmat.primitives import hashes
-        cryptography_available = True
-    except ImportError:
-        cryptography_available = False
+    allow_unverified = current_app.config.get('ENTITLEMENT_ALLOW_UNVERIFIED', False)
 
-    if cryptography_available:
+    if not allow_unverified:
         try:
-            leaf_der = base64.b64decode(header['x5c'][0])
-            leaf_certificate = x509.load_der_x509_certificate(leaf_der)
-            signing_input = f'{header_segment}.{payload_segment}'.encode()
-            raw_signature = _base64url_decode(signature_segment)
-            # JWS ES256 signatures are raw r||s; convert to DER.
-            from cryptography.hazmat.primitives.asymmetric.utils import (
-                encode_dss_signature)
-            half = len(raw_signature) // 2
-            der_signature = encode_dss_signature(
-                int.from_bytes(raw_signature[:half], 'big'),
-                int.from_bytes(raw_signature[half:], 'big'))
-            leaf_certificate.public_key().verify(
-                der_signature, signing_input, ec.ECDSA(hashes.SHA256()))
-        except Exception as verification_error:
-            raise InvalidReceipt(f'signature verification failed: {verification_error}')
-    elif not current_app.config.get('ENTITLEMENT_ALLOW_UNVERIFIED', False):
-        raise VerifierUnavailable(
-            'cryptography package unavailable and unverified receipts are disabled')
+            from cryptography import x509  # noqa: F401
+        except ImportError:
+            raise VerifierUnavailable(
+                'cryptography package unavailable and unverified receipts are disabled')
+
+        trusted_roots = _load_pinned_root_certificates()
+        if not trusted_roots:
+            raise VerifierUnavailable(
+                'no pinned Apple root certificates configured '
+                '(set ENTITLEMENT_APPLE_ROOT_CERTS_PATH) and unverified receipts '
+                'are disabled')
+
+        _verify_jws_signature(header, header_segment, payload_segment,
+                              signature_segment, trusted_roots)
 
     return {
         'product_id': product_id,
         'expires_at': datetime.utcfromtimestamp(expires_ms / 1000.0),
         'environment': environment,
     }
+
+
+def _load_pinned_root_certificates():
+    """Load trusted root certificates from ENTITLEMENT_APPLE_ROOT_CERTS_PATH."""
+    import os
+
+    from cryptography import x509
+
+    certs_path = current_app.config.get('ENTITLEMENT_APPLE_ROOT_CERTS_PATH')
+    if not certs_path or not os.path.exists(certs_path):
+        return []
+
+    pem_paths = []
+    if os.path.isdir(certs_path):
+        pem_paths = [os.path.join(certs_path, name)
+                     for name in sorted(os.listdir(certs_path))
+                     if name.endswith(('.pem', '.crt', '.cer'))]
+    else:
+        pem_paths = [certs_path]
+
+    roots = []
+    for pem_path in pem_paths:
+        with open(pem_path, 'rb') as pem_file:
+            data = pem_file.read()
+        try:
+            roots.extend(x509.load_pem_x509_certificates(data))
+        except ValueError:
+            try:
+                roots.append(x509.load_der_x509_certificate(data))
+            except ValueError:
+                continue
+    return roots
+
+
+def _verify_jws_signature(header, header_segment, payload_segment,
+                          signature_segment, trusted_roots):
+    """Verify the x5c chain to a pinned root, then the ES256 JWS signature."""
+    import base64 as base64_module
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+
+    try:
+        chain = [x509.load_der_x509_certificate(base64_module.b64decode(entry))
+                 for entry in header['x5c']]
+        if not chain:
+            raise InvalidReceipt('empty x5c chain')
+    except InvalidReceipt:
+        raise
+    except Exception as parse_error:
+        raise InvalidReceipt(f'malformed x5c chain: {parse_error}')
+
+    try:
+        # Each certificate must be signed by the next one up; the last link
+        # must be signed by (or be) a pinned root.
+        for child, issuer in zip(chain, chain[1:]):
+            _verify_certificate_signature(child, issuer)
+        top_of_chain = chain[-1]
+        trusted = False
+        for root in trusted_roots:
+            if top_of_chain.tbs_certificate_bytes == root.tbs_certificate_bytes:
+                trusted = True
+                break
+            try:
+                _verify_certificate_signature(top_of_chain, root)
+                trusted = True
+                break
+            except Exception:
+                continue
+        if not trusted:
+            raise InvalidReceipt('x5c chain does not terminate at a pinned root')
+
+        leaf_certificate = chain[0]
+        signing_input = f'{header_segment}.{payload_segment}'.encode()
+        raw_signature = _base64url_decode(signature_segment)
+        half = len(raw_signature) // 2
+        der_signature = encode_dss_signature(
+            int.from_bytes(raw_signature[:half], 'big'),
+            int.from_bytes(raw_signature[half:], 'big'))
+        leaf_certificate.public_key().verify(
+            der_signature, signing_input, ec.ECDSA(hashes.SHA256()))
+    except InvalidReceipt:
+        raise
+    except Exception as verification_error:
+        raise InvalidReceipt(f'signature verification failed: {verification_error}')
+
+
+def _verify_certificate_signature(certificate, issuer):
+    """Raise unless `certificate` was signed by `issuer`'s key (EC or RSA)."""
+    from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+
+    issuer_public_key = issuer.public_key()
+    if isinstance(issuer_public_key, rsa.RSAPublicKey):
+        issuer_public_key.verify(
+            certificate.signature, certificate.tbs_certificate_bytes,
+            padding.PKCS1v15(), certificate.signature_hash_algorithm)
+    elif isinstance(issuer_public_key, ec.EllipticCurvePublicKey):
+        issuer_public_key.verify(
+            certificate.signature, certificate.tbs_certificate_bytes,
+            ec.ECDSA(certificate.signature_hash_algorithm))
+    else:
+        raise InvalidReceipt('unsupported issuer key type in x5c chain')
 
 
 def has_active_team_entitlement(device_id):

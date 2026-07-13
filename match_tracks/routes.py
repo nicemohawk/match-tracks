@@ -207,17 +207,23 @@ def _validate_session_team_memberships(device_id, session_dicts):
     if principal and principal.get('admin'):
         return None
 
+    # Evaluate the whole batch against the pre-request state first, so a
+    # denial partway through never leaves an auto-join half-applied.
+    has_any_membership = (
+        DeviceTeamMembership.objects(device_id=device_id).first() is not None
+        or Player.objects(device_id=device_id, team_code__ne=None).first() is not None)
+
+    teams_to_join = []
     for session_dict in session_dicts:
         team_code = session_dict.get('team_code')
         if not team_code or is_member(device_id, team_code):
             continue
-
-        has_any_membership = (
-            DeviceTeamMembership.objects(device_id=device_id).first() is not None
-            or Player.objects(device_id=device_id, team_code__ne=None).first() is not None)
         if has_any_membership:
             return jsonify({'reason': 'not_a_member'}), 400
+        if team_code not in teams_to_join:
+            teams_to_join.append(team_code)
 
+    for team_code in teams_to_join:
         if Team.objects(code=team_code).first() is None:
             Team(code=team_code, name=None).save()
         DeviceTeamMembership(device_id=device_id, team_code=team_code).save()
@@ -378,6 +384,13 @@ def _match_detail(match):
 @auth.login_required
 @rate_limited('read')
 def get_device_matches(identifier):
+    # V2 hardening: raw match data (full tracks) is the device's own; only the
+    # device itself or an admin may read it.
+    from match_tracks.memberships import actor_denial
+    denial = actor_denial(identifier)
+    if denial:
+        return denial
+
     device_id = str(identifier).lower()
 
     limit = request.args.get('limit', default=20, type=int)
@@ -406,6 +419,11 @@ def get_device_matches(identifier):
 @auth.login_required
 @rate_limited('read')
 def get_device_match(identifier, match_uuid):
+    from match_tracks.memberships import actor_denial
+    denial = actor_denial(identifier)
+    if denial:
+        return denial
+
     device_id = str(identifier).lower()
     match = Match.objects(device_id=device_id, uuid=str(match_uuid).lower()).first()
     if match is None:

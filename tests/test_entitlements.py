@@ -191,18 +191,17 @@ def test_default_jws_verifier_with_fake_certificate(app):
     jws_string = _build_fake_jws(expires_at=future)
 
     with app.app_context():
-        if CRYPTOGRAPHY_AVAILABLE:
-            with pytest.raises(InvalidReceipt):
-                default_jws_verifier(jws_string)
-        else:
-            app.config['ENTITLEMENT_ALLOW_UNVERIFIED'] = True
-            result = default_jws_verifier(jws_string)
-            assert result['product_id'] == TEAM_PRODUCT_ID
-            assert abs((result['expires_at'] - future).total_seconds()) < 1
+        # Strict mode never trusts sender-supplied certs: with cryptography
+        # but no pinned Apple roots configured, and without cryptography at
+        # all, the verifier must refuse rather than pseudo-verify.
+        app.config['ENTITLEMENT_ALLOW_UNVERIFIED'] = False
+        with pytest.raises(VerifierUnavailable):
+            default_jws_verifier(jws_string)
 
-            app.config['ENTITLEMENT_ALLOW_UNVERIFIED'] = False
-            with pytest.raises(VerifierUnavailable):
-                default_jws_verifier(jws_string)
+        app.config['ENTITLEMENT_ALLOW_UNVERIFIED'] = True
+        result = default_jws_verifier(jws_string)
+        assert result['product_id'] == TEAM_PRODUCT_ID
+        assert abs((result['expires_at'] - future).total_seconds()) < 1
 
 
 def test_default_jws_verifier_malformed_jws_raises_invalid_receipt(app):

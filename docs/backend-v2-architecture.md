@@ -227,3 +227,29 @@ Use existing fixtures (`app`, `client`, `admin_headers`, `device_key`). Conftest
 expires_at)` fixture, ENTITLEMENTS_ENFORCED=False default, live/comment rate limits 10000.
 Agents append their needs via coordinator. V1 suite (78 tests) must stay green at every wave
 boundary.
+
+## Post-review amendments (Wave 4 adjudications — supersede conflicting text above)
+
+- §7 default verifier: signature verification REQUIRES pinned root certificates
+  loaded from `ENTITLEMENT_APPLE_ROOT_CERTS_PATH` (PEM file or directory; deployments
+  bundle Apple's roots there). The x5c chain must link leaf→…→pinned root. Without the
+  `cryptography` package OR without pinned roots, strict mode raises VerifierUnavailable
+  (503) — leaf-only "verification" is forbidden (it trusts an attacker-supplied cert).
+  `ENTITLEMENT_ALLOW_UNVERIFIED=True` remains development-only.
+- §2 comments on team-less matches: only the match's own device or an admin may read or
+  post (a team-less match has no members; "any valid key" is withdrawn). `limit` clamps
+  to [1, 500].
+- §1 live POST: the acting device must be the URL device (admin exempt) — actor rule
+  documented.
+- V1 match reads hardened: `GET /devices/{id}/matches` and `/matches/{uuid}` now require
+  the device's own key or admin (raw tracks are personal data; previously any valid key).
+- §3 formation: consent-gated teams exclude unconsented players from slots entirely;
+  `player_name` is null when no Player row exists (no device-id fragment fallback).
+- §6 ingest auto-join: the whole batch is evaluated against pre-request membership state
+  before any membership row is written (no partial side effects on 400).
+- Known accepted inconsistency: the generic rate limiter 429 body is
+  `{"message": "rate limit exceeded"}` (V1 shape) while seeding's daily-limit 429 uses
+  `{"reason": "seed_request_daily_limit"}`.
+- V1 behavior change (sanctioned by §6): a device with an existing team affiliation that
+  tags a NEW team must join it first via POST /devices/{id}/teams; last-write-wins
+  team switching on upload no longer applies.

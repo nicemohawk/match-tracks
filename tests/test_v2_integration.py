@@ -251,3 +251,170 @@ def test_team_stats_respect_initials_and_consent(client, admin_headers, device_k
     stats = client.get(f'/teams/{team_code}/stats', headers=admin_headers).get_json()
     names = [player['player_name'] for player in stats['players']]
     assert names == ['C. C.']  # initials rendered; unconsented player hidden
+
+
+# --- Wave 4 review-fix regressions -------------------------------------------
+
+def test_team_less_match_comments_are_owner_only(client, admin_headers, device_key):
+    from match_tracks.models import Match
+
+    owner_device = register_device(client, admin_headers)
+    owner_headers = device_key('v2-fix-owner', owner_device)
+    stranger_device = register_device(client, admin_headers)
+    stranger_headers = device_key('v2-fix-stranger', stranger_device)
+
+    match_uuid = new_uuid()
+    Match(uuid=match_uuid, device_id=owner_device, team_code=None).save()
+
+    payload = {'id': new_uuid(), 'body': 'private note'}
+    assert client.post(f'/matches/{match_uuid}/comments', json=payload,
+                       headers=owner_headers).status_code == 201
+    assert client.get(f'/matches/{match_uuid}/comments',
+                      headers=owner_headers).status_code == 200
+
+    stranger_post = client.post(f'/matches/{match_uuid}/comments',
+                                json={'id': new_uuid(), 'body': 'intrusion'},
+                                headers=stranger_headers)
+    assert stranger_post.status_code == 403
+    stranger_get = client.get(f'/matches/{match_uuid}/comments',
+                              headers=stranger_headers)
+    assert stranger_get.status_code == 403
+
+    assert client.get(f'/matches/{match_uuid}/comments',
+                      headers=admin_headers).status_code == 200
+
+
+def test_comment_limit_zero_and_negative_are_clamped(client, admin_headers, device_key):
+    from match_tracks.models import Match
+
+    device_uuid = register_device(client, admin_headers)
+    device_headers = device_key('v2-fix-limit', device_uuid)
+    match_uuid = new_uuid()
+    Match(uuid=match_uuid, device_id=device_uuid, team_code=None).save()
+
+    for index in range(3):
+        assert client.post(f'/matches/{match_uuid}/comments',
+                           json={'id': new_uuid(), 'body': f'comment {index}'},
+                           headers=device_headers).status_code == 201
+
+    for bad_limit in (0, -5):
+        body = client.get(f'/matches/{match_uuid}/comments?limit={bad_limit}',
+                          headers=device_headers).get_json()
+        assert len(body['comments']) == 1  # clamped to 1, never "no limit"
+
+
+def test_non_string_comment_body_is_rejected(client, admin_headers, device_key):
+    from match_tracks.models import Match
+
+    device_uuid = register_device(client, admin_headers)
+    device_headers = device_key('v2-fix-body-type', device_uuid)
+    match_uuid = new_uuid()
+    Match(uuid=match_uuid, device_id=device_uuid, team_code=None).save()
+
+    response = client.post(f'/matches/{match_uuid}/comments',
+                           json={'id': new_uuid(), 'body': [1, 2, 3]},
+                           headers=device_headers)
+    assert response.status_code == 400
+
+
+def test_match_reads_are_scoped_to_the_device_or_admin(client, admin_headers, device_key):
+    latitude, longitude = _venue(7)
+    owner_device = register_device(client, admin_headers)
+    owner_headers = device_key('v2-fix-matches-owner', owner_device)
+    other_device = register_device(client, admin_headers)
+    other_headers = device_key('v2-fix-matches-other', other_device)
+
+    session_uuid = new_uuid()
+    payload = make_extended_session_payload(
+        session_uuid, '2026-07-13T09:00:00Z',
+        make_match_track(latitude, longitude, num_points=10))
+    assert client.post(f'/devices/{owner_device}/sessions/',
+                       json={'sessions': [payload]},
+                       headers=owner_headers).status_code == 200
+
+    assert client.get(f'/devices/{owner_device}/matches',
+                      headers=owner_headers).status_code == 200
+    assert client.get(f'/devices/{owner_device}/matches',
+                      headers=other_headers).status_code == 403
+    assert client.get(f'/devices/{owner_device}/matches/{session_uuid}',
+                      headers=other_headers).status_code == 403
+    assert client.get(f'/devices/{owner_device}/matches',
+                      headers=admin_headers).status_code == 200
+
+
+def test_formation_excludes_unconsented_minors_and_leaks_no_device_ids(client, admin_headers, membership):
+    from datetime import datetime
+    from match_tracks.models import Match, Player, Team
+
+    team_code = 'v2-fix-formation-team'
+    Team(code=team_code, requires_consent=True).save()
+
+    # 6 devices with formation data; only 5 have consent — the sixth must
+    # neither appear nor push the response over the threshold check.
+    positions = [(0.06, 0.5), (0.25, 0.2), (0.25, 0.8), (0.55, 0.35), (0.55, 0.65), (0.82, 0.5)]
+    device_ids = []
+    for index, (mean_x, mean_y) in enumerate(positions):
+        device_id = f'v2-fix-formation-device-{index}'
+        device_ids.append(device_id)
+        consent = datetime.utcnow() if index < 5 else None
+        Player(device_id=device_id, name=None, team_code=team_code,
+               consent_acknowledged_at=consent).save()
+        Match(uuid=new_uuid(), device_id=device_id, team_code=team_code,
+              recorded_at=datetime.utcnow(),
+              stats={'mean_x': mean_x, 'mean_y': mean_y}).save()
+
+    response = client.get(f'/teams/{team_code}/formation', headers=admin_headers)
+    assert response.status_code == 200
+    body = response.get_json()
+    assert len(body['slots']) == 5  # unconsented sixth excluded entirely
+    for slot in body['slots']:
+        # No Player.name set → null, never a device-id fragment.
+        assert slot['player_name'] is None
+
+
+def test_batch_auto_join_is_all_or_nothing(client, admin_headers, device_key):
+    from match_tracks.models import DeviceTeamMembership
+
+    latitude, longitude = _venue(8)
+
+    # A membership-less device tagging two new teams in one batch joins both.
+    fresh_device = register_device(client, admin_headers)
+    fresh_headers = device_key('v2-fix-batch-fresh', fresh_device)
+    batch = [
+        make_extended_session_payload(new_uuid(), '2026-07-13T09:00:00Z',
+                                      make_match_track(latitude, longitude, num_points=10),
+                                      team_code='v2-batch-team-a'),
+        make_extended_session_payload(new_uuid(), '2026-07-13T10:00:00Z',
+                                      make_match_track(latitude, longitude, num_points=10),
+                                      team_code='v2-batch-team-b'),
+    ]
+    assert client.post(f'/devices/{fresh_device}/sessions/',
+                       json={'sessions': batch},
+                       headers=fresh_headers).status_code == 200
+    joined = {membership.team_code for membership
+              in DeviceTeamMembership.objects(device_id=fresh_device)}
+    assert joined == {'v2-batch-team-a', 'v2-batch-team-b'}
+
+    # A device WITH a membership tagging a foreign team gets 400 and no new rows.
+    member_device = register_device(client, admin_headers)
+    member_headers = device_key('v2-fix-batch-member', member_device)
+    first = make_extended_session_payload(new_uuid(), '2026-07-13T09:00:00Z',
+                                          make_match_track(latitude, longitude, num_points=10),
+                                          team_code='v2-batch-home')
+    assert client.post(f'/devices/{member_device}/sessions/',
+                       json={'sessions': [first]},
+                       headers=member_headers).status_code == 200
+    mixed_batch = [
+        make_extended_session_payload(new_uuid(), '2026-07-13T11:00:00Z',
+                                      make_match_track(latitude, longitude, num_points=10),
+                                      team_code='v2-batch-home'),
+        make_extended_session_payload(new_uuid(), '2026-07-13T12:00:00Z',
+                                      make_match_track(latitude, longitude, num_points=10),
+                                      team_code='v2-batch-foreign'),
+    ]
+    response = client.post(f'/devices/{member_device}/sessions/',
+                           json={'sessions': mixed_batch},
+                           headers=member_headers)
+    assert response.status_code == 400
+    assert DeviceTeamMembership.objects(device_id=member_device,
+                                        team_code='v2-batch-foreign').count() == 0
