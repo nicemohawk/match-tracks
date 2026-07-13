@@ -15,6 +15,8 @@ from flask import current_app, jsonify, request
 
 DEFAULT_WRITE_LIMIT_PER_MINUTE = 60
 DEFAULT_READ_LIMIT_PER_MINUTE = 120
+DEFAULT_LIVE_LIMIT_PER_MINUTE = 30  # ~1 update per 2 s per device
+DEFAULT_COMMENT_LIMIT_PER_MINUTE = 10
 
 _lock = threading.Lock()
 _buckets = {}
@@ -53,6 +55,12 @@ def _limit_for_scope(scope):
     if scope == 'write':
         return current_app.config.get(
             'RATE_LIMIT_WRITE_PER_MINUTE', DEFAULT_WRITE_LIMIT_PER_MINUTE)
+    if scope == 'live':
+        return current_app.config.get(
+            'RATE_LIMIT_LIVE_PER_MINUTE', DEFAULT_LIVE_LIMIT_PER_MINUTE)
+    if scope == 'comment':
+        return current_app.config.get(
+            'RATE_LIMIT_COMMENT_PER_MINUTE', DEFAULT_COMMENT_LIMIT_PER_MINUTE)
     return current_app.config.get(
         'RATE_LIMIT_READ_PER_MINUTE', DEFAULT_READ_LIMIT_PER_MINUTE)
 

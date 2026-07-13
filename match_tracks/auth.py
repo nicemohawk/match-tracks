@@ -16,7 +16,7 @@ different team, are denied. This keeps a device from reading another team's
 match data just because it knows (or guesses) that team's code.
 """
 
-from flask import current_app
+from flask import current_app, request
 from flask_httpauth import HTTPTokenAuth
 
 from match_tracks.models import Player
@@ -47,6 +47,29 @@ def verify_token(token):
 def current_principal():
     """Return the principal dict for the currently authenticated request."""
     return auth.current_user()
+
+
+def effective_device_id():
+    """The device acting in the current request, or None.
+
+    Device keys act as their registered device; an `X-Device-ID` header that
+    disagrees with the key's device is rejected (returns None). Admin keys act
+    as whatever `X-Device-ID` names (lowercased), or None when absent.
+    """
+    principal = current_principal()
+    if not principal:
+        return None
+
+    header_device_id = request.headers.get('X-Device-ID')
+    normalized_header = header_device_id.lower() if header_device_id else None
+
+    if principal.get('admin'):
+        return normalized_header
+
+    key_device_id = principal.get('device_id')
+    if normalized_header and normalized_header != key_device_id:
+        return None
+    return key_device_id
 
 
 def principal_may_read_team(principal, team_code):

@@ -27,6 +27,13 @@ def app():
     flask_app.config['RATE_LIMIT_ENABLED'] = True
     flask_app.config['RATE_LIMIT_WRITE_PER_MINUTE'] = 10000
     flask_app.config['RATE_LIMIT_READ_PER_MINUTE'] = 10000
+    # V2 knobs (docs/backend-v2-architecture.md).
+    flask_app.config['RATE_LIMIT_LIVE_PER_MINUTE'] = 10000
+    flask_app.config['RATE_LIMIT_COMMENT_PER_MINUTE'] = 10000
+    flask_app.config['ENTITLEMENTS_ENFORCED'] = False
+    flask_app.config['ENTITLEMENT_VERIFIER'] = None
+    flask_app.config['ENTITLEMENT_ALLOW_UNVERIFIED'] = False
+    flask_app.config['IMAGERY_PROVIDER'] = None
     yield flask_app
     # Isolate tests: wipe every collection and any rate-limiter state.
     connection = mongoengine.get_connection()
@@ -57,3 +64,31 @@ def device_key(app):
         return {'Authorization': f'APIKey {key}'}
 
     return register
+
+
+@pytest.fixture()
+def membership(app):
+    """Create a device→team membership row directly (V2 fixture)."""
+
+    def join(device_uuid, team_code):
+        from match_tracks.models import DeviceTeamMembership, Team
+        if Team.objects(code=team_code).first() is None:
+            Team(code=team_code).save()
+        if DeviceTeamMembership.objects(device_id=device_uuid.lower(),
+                                        team_code=team_code).first() is None:
+            DeviceTeamMembership(device_id=device_uuid.lower(), team_code=team_code).save()
+
+    return join
+
+
+@pytest.fixture()
+def grant_entitlement(app):
+    """Grant (or expire) a team entitlement for a device (V2 fixture)."""
+
+    def grant(device_uuid, expires_at):
+        from match_tracks.models import Entitlement
+        Entitlement.objects(device_id=device_uuid.lower(),
+                            product_id='com.nicemohawk.MatchTracker.team.monthly').update_one(
+            set__expires_at=expires_at, set__environment='test', upsert=True)
+
+    return grant
