@@ -129,20 +129,9 @@ def update_device(identifier):
     return jsonify({'updated_device': device_schema.dump(updated_device)})
 
 
-# DELETE single device
-@app.route('/devices/<uuid:identifier>/', methods=['DELETE'])
-@auth.login_required
-def delete_device(identifier):
-    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
-
-    response = {'deleted_device': device_schema.dump(device)}
-
-    try:
-        device.delete()
-    except Exception as err:
-        return jsonify(type(err).__name__), 422
-
-    return jsonify(response)
+# DELETE single device — replaced in V2 by the compliance cascade in
+# match_tracks/privacy.py (DELETE /devices/<device_id> → 202 + deletion_id),
+# which also removes the legacy Device document. The old route lived here.
 
 
 # READ device sessions (legacy, unauthenticated)
@@ -166,6 +155,12 @@ def add_session(identifier):
         return jsonify({'result': 'No input data provided.'}), 400
 
     device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+    device_id = device.vendor_identifier.lower()
+
+    # --- V2: the uploading device must belong to any team it tags (§6) ---
+    membership_denial = _validate_session_team_memberships(device_id, json_data)
+    if membership_denial:
+        return membership_denial
 
     # --- Legacy embedded write: unchanged response shape ---
     sessions = device.sessions
@@ -175,18 +170,59 @@ def add_session(identifier):
     except ValidationError as err:
         return jsonify(err.messages), 422
 
+    # V2 idempotency: a session uuid that already exists as a Match has been
+    # ingested before — do not append a duplicate embedded copy on retry.
+    existing_embedded_uuids = {
+        embedded.uuid for embedded in sessions if getattr(embedded, 'uuid', None)}
     for session in new_sessions:
-        sessions.append(session)
+        session_uuid = (session.uuid or '').lower() or None
+        session.uuid = session_uuid
+        already_ingested = session_uuid and (
+            session_uuid in existing_embedded_uuids
+            or Match.objects(uuid=session_uuid).first() is not None)
+        if not already_ingested:
+            sessions.append(session)
 
     sessions.save()
     result = SessionSchema().dump(new_sessions, many=True)
 
     # --- Extended dual-write into the top-level Match collection ---
-    device_id = device.vendor_identifier.lower()
     for session_dict in json_data:
         _upsert_match_from_session(device_id, session_dict)
 
     return jsonify({'added_sessions': result})
+
+
+def _validate_session_team_memberships(device_id, session_dicts):
+    """400 when the device tags a team it doesn't belong to (V2 §6).
+
+    Admin keys bypass. A device with no memberships anywhere (no rows, no
+    legacy default team) is auto-joined to the tagged team — smooth V1→V2
+    migration for solo users.
+    """
+    from match_tracks.memberships import is_member
+    from match_tracks.models import DeviceTeamMembership
+
+    principal = current_principal()
+    if principal and principal.get('admin'):
+        return None
+
+    for session_dict in session_dicts:
+        team_code = session_dict.get('team_code')
+        if not team_code or is_member(device_id, team_code):
+            continue
+
+        has_any_membership = (
+            DeviceTeamMembership.objects(device_id=device_id).first() is not None
+            or Player.objects(device_id=device_id, team_code__ne=None).first() is not None)
+        if has_any_membership:
+            return jsonify({'reason': 'not_a_member'}), 400
+
+        if Team.objects(code=team_code).first() is None:
+            Team(code=team_code, name=None).save()
+        DeviceTeamMembership(device_id=device_id, team_code=team_code).save()
+
+    return None
 
 
 def _upsert_match_from_session(device_id, session_dict):
@@ -208,11 +244,14 @@ def _upsert_match_from_session(device_id, session_dict):
     canonical_field = field_service.resolve_field_uuid(provided_field_uuid)
     field_uuid_value = canonical_field.uuid if canonical_field else None
 
+    sport_id = session_dict.get('sport_id')
+
     # Field observation ingest only on first insert (re-uploads must not
     # double-count observations).
     if is_new:
         ingested_field = field_service.ingest_track_observation(
-            device_id, _track_coordinates(track), field_uuid=provided_field_uuid)
+            device_id, _track_coordinates(track), field_uuid=provided_field_uuid,
+            sport_id=sport_id)
         if ingested_field is not None:
             field_uuid_value = ingested_field.uuid
     elif field_uuid_value is None:
@@ -232,6 +271,8 @@ def _upsert_match_from_session(device_id, session_dict):
         player.updated_at = datetime.utcnow()
         player.save()
 
+    from match_tracks.sports_config import normalized_sport_id
+
     match = existing_match or Match(uuid=match_uuid)
     match.device_id = device_id
     match.field_uuid = field_uuid_value
@@ -241,6 +282,7 @@ def _upsert_match_from_session(device_id, session_dict):
     match.events = session_dict.get('events') or []
     match.stats = session_dict.get('stats') or {}
     match.team_code = team_code
+    match.sport_id = normalized_sport_id(sport_id)
     match.save()
 
 
@@ -274,8 +316,18 @@ def add_fields(identifier):
     except ValidationError as err:
         return jsonify(err.messages), 422
 
+    # V2 idempotency: a field uuid that already resolves in the community
+    # database has been ingested before — skip the duplicate embedded copy.
+    existing_embedded_uuids = {
+        embedded.uuid for embedded in fields if getattr(embedded, 'uuid', None)}
     for field in new_fields:
-        fields.append(field)
+        field_uuid = (field.uuid or '').lower() or None
+        field.uuid = field_uuid
+        already_ingested = field_uuid and (
+            field_uuid in existing_embedded_uuids
+            or field_service.resolve_field_uuid(field_uuid) is not None)
+        if not already_ingested:
+            fields.append(field)
 
     fields.save()
     result = FieldSchema().dump(new_fields, many=True)
@@ -287,7 +339,8 @@ def add_fields(identifier):
         if not field_uuid:
             continue
         field_service.ingest_trained_field(
-            device_id, str(field_uuid), _track_coordinates(field_dict.get('track')))
+            device_id, str(field_uuid), _track_coordinates(field_dict.get('track')),
+            sport_id=field_dict.get('sport_id'))
 
     return jsonify({'added_fields': result})
 
@@ -408,13 +461,19 @@ def get_team_stats(code):
             elif kind == 'assist':
                 device_aggregate['assists'] += 1
 
+    from match_tracks.privacy import consent_blocked, player_display_name
+
     players = []
     for device_id, device_aggregate in aggregates_by_device.items():
         player = Player.objects(device_id=device_id).first()
+        # V2 §5: teams flagged requires_consent hide players until a guardian
+        # has acknowledged consent.
+        if consent_blocked(player, team):
+            continue
         workrate_scores = device_aggregate.pop('workrate_scores')
         avg_workrate_score = (sum(workrate_scores) / len(workrate_scores)
                               if workrate_scores else None)
-        device_aggregate['player_name'] = player.name if player else None
+        device_aggregate['player_name'] = player_display_name(player)
         device_aggregate['avg_workrate_score'] = avg_workrate_score
         players.append(device_aggregate)
 
@@ -449,6 +508,10 @@ def get_nearby_fields():
         radius_m = 20000.0
     min_confidence = request.args.get('min_confidence', default=0.0, type=float)
 
+    from match_tracks.sports_config import normalized_sport_id, sports_match
+    sport_filter_given = 'sport_id' in request.args
+    sport_filter = normalized_sport_id(request.args.get('sport_id'))
+
     latitude_delta = radius_m / METERS_PER_DEGREE_LATITUDE
     cos_latitude = math.cos(math.radians(latitude))
     longitude_delta = (radius_m / (METERS_PER_DEGREE_LATITUDE * cos_latitude)
@@ -465,6 +528,12 @@ def get_nearby_fields():
     nearby = []
     for field in candidates:
         if field.rect_center_lat is None or field.rect_center_lon is None:
+            continue
+        if sport_filter_given and not sports_match(field.sport_id, sport_filter):
+            continue
+        # Satellite-seeded fields with no real observation stay hidden unless
+        # the caller opts into low confidence (V2 §8).
+        if field.seeded and (field.observation_count or 0) == 0 and min_confidence > 0.25:
             continue
         distance_m = geometry.haversine_distance_m(
             latitude, longitude, field.rect_center_lat, field.rect_center_lon)

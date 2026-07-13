@@ -208,7 +208,7 @@ def test_ingest_trained_field_matching_creates_alias_stub(app, monkeypatch, line
 # ingest_track_observation ---------------------------------------------------
 def test_ingest_track_resolves_via_alias(app, monkeypatch, linear_headings):
     monkeypatch.setattr(field_service.geometry, 'fit_track_as_field_observation',
-                        lambda coordinates: make_rect())
+                        lambda coordinates, **bounds: make_rect())
     canonical = CommunityField(
         uuid='track-canon',
         rect_center_lat=10.0, rect_center_lon=20.0,
@@ -226,7 +226,7 @@ def test_ingest_track_resolves_via_alias(app, monkeypatch, linear_headings):
 
 def test_ingest_track_creates_inferred_on_no_match(app, monkeypatch, linear_headings):
     monkeypatch.setattr(field_service.geometry, 'fit_track_as_field_observation',
-                        lambda coordinates: make_rect())
+                        lambda coordinates, **bounds: make_rect())
 
     result = field_service.ingest_track_observation('device-9', [[0, 0]] * 250)
     assert result is not None
@@ -242,7 +242,7 @@ def test_ingest_track_creates_inferred_on_no_match(app, monkeypatch, linear_head
 
 def test_ingest_track_degenerate_rect_modifies_nothing(app, monkeypatch):
     monkeypatch.setattr(field_service.geometry, 'fit_track_as_field_observation',
-                        lambda coordinates: None)
+                        lambda coordinates, **bounds: None)
 
     # No field_uuid: nothing stored, returns None.
     assert field_service.ingest_track_observation('device-9', [[0, 0]]) is None

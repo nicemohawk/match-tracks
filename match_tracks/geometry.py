@@ -260,12 +260,16 @@ def fit_rect_to_coordinates(coordinates: Sequence[Sequence[float]]) -> Optional[
     )
 
 
-def fit_track_as_field_observation(coordinates: Sequence[Sequence[float]]) -> Optional[FittedRect]:
+def fit_track_as_field_observation(coordinates: Sequence[Sequence[float]],
+                                   length_bounds: Optional[Tuple[float, float]] = None,
+                                   width_bounds: Optional[Tuple[float, float]] = None,
+                                   ) -> Optional[FittedRect]:
     """Fit a match GPS track as evidence of field geometry.
 
     Applies ``MINIMUM_TRACK_POINTS_FOR_OBSERVATION``, expands the raw fit by
     ``TRACK_FIT_EXPANSION`` per axis, and returns ``None`` unless the expanded
-    fit passes ``rect_within_sanity_bounds``.
+    fit passes ``rect_within_sanity_bounds``. Bounds default to the soccer
+    constants; callers with per-sport profiles pass their own.
     """
     if len(coordinates) < MINIMUM_TRACK_POINTS_FOR_OBSERVATION:
         return None
@@ -282,15 +286,18 @@ def fit_track_as_field_observation(coordinates: Sequence[Sequence[float]]) -> Op
         heading_deg=raw_fit.heading_deg,
     )
 
-    if not rect_within_sanity_bounds(expanded_fit):
+    if not rect_within_sanity_bounds(expanded_fit, length_bounds, width_bounds):
         return None
     return expanded_fit
 
 
-def rect_within_sanity_bounds(rect: FittedRect) -> bool:
-    """True if the rectangle is a plausible soccer pitch."""
-    minimum_length, maximum_length = FIELD_LENGTH_BOUNDS_M
-    minimum_width, maximum_width = FIELD_WIDTH_BOUNDS_M
+def rect_within_sanity_bounds(rect: FittedRect,
+                              length_bounds: Optional[Tuple[float, float]] = None,
+                              width_bounds: Optional[Tuple[float, float]] = None) -> bool:
+    """True if the rectangle is a plausible pitch for the given bounds
+    (defaults: soccer)."""
+    minimum_length, maximum_length = length_bounds or FIELD_LENGTH_BOUNDS_M
+    minimum_width, maximum_width = width_bounds or FIELD_WIDTH_BOUNDS_M
     return (
         minimum_length <= rect.length_m <= maximum_length
         and minimum_width <= rect.width_m <= maximum_width

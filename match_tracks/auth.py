@@ -19,8 +19,6 @@ match data just because it knows (or guesses) that team's code.
 from flask import current_app, request
 from flask_httpauth import HTTPTokenAuth
 
-from match_tracks.models import Player
-
 # Legacy hardcoded key, kept for backward compatibility with existing
 # operator tooling that has not yet been issued a config-managed key.
 DEFAULT_API_TOKENS = {'hi-bob': 'bob'}
@@ -75,9 +73,9 @@ def effective_device_id():
 def principal_may_read_team(principal, team_code):
     """Return True if `principal` is allowed to read `team_code`'s stats.
 
-    Admin keys may read any team. Device keys may only read the team their
-    registered Player profile belongs to; unknown devices or devices with no
-    matching Player row are denied.
+    Admin keys may read any team. Device keys may read teams they belong to:
+    a device_teams membership row (V2) or their Player profile's default team
+    (V1 behavior). Unknown devices are denied.
     """
     if not principal:
         return False
@@ -89,8 +87,5 @@ def principal_may_read_team(principal, team_code):
     if not device_id:
         return False
 
-    player = Player.objects(device_id=device_id).first()
-    if player is None:
-        return False
-
-    return player.team_code == team_code
+    from match_tracks.memberships import is_member  # avoid import cycle
+    return is_member(device_id, team_code)
