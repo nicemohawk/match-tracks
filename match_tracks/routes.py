@@ -8,6 +8,7 @@ from mongoengine.connection import get_connection
 from match_tracks import app
 from match_tracks import field_service, geometry
 from match_tracks.auth import auth, current_principal, principal_may_read_team
+from match_tracks.db import first_or_404
 from match_tracks.models import (Device, DeviceSchema, SessionSchema, FieldSchema,
                                  Match, Team, Player, CommunityField)
 from match_tracks.rate_limit import rate_limited
@@ -200,13 +201,13 @@ def create_device():
 
     created_device.save()
 
-    return jsonify({'device': created_device})
+    return jsonify({'device': device_schema.dump(created_device)})
 
 
 # READ single device
 @app.route('/devices/<uuid:identifier>/', methods=['GET'])
 def get_device(identifier):
-    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+    device = first_or_404(Device.objects(vendor_identifier=str(identifier)))
 
     result = device_schema.dump(device)
 
@@ -217,7 +218,7 @@ def get_device(identifier):
 @app.route('/devices/<uuid:identifier>/', methods=['PUT'])
 @auth.login_required
 def update_device(identifier):
-    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+    device = first_or_404(Device.objects(vendor_identifier=str(identifier)))
 
     json_data = request.get_json()
 
@@ -243,8 +244,8 @@ def update_device(identifier):
 # READ device sessions (legacy, unauthenticated)
 @app.route('/devices/<identifier>/sessions/', methods=['GET'])
 def get_device_sessions(identifier):
-    device = Device.objects(
-        vendor_identifier=_normalized_device_id(identifier)).first_or_404()
+    device = first_or_404(Device.objects(
+        vendor_identifier=_normalized_device_id(identifier)))
 
     result = SessionSchema().dump(device.sessions, many=True)
 
@@ -404,8 +405,8 @@ def _upsert_match_from_session(device_id, session_dict):
 # READ device fields (legacy, unauthenticated)
 @app.route('/devices/<identifier>/fields/', methods=['GET'])
 def get_device_fields(identifier):
-    device = Device.objects(
-        vendor_identifier=_normalized_device_id(identifier)).first_or_404()
+    device = first_or_404(Device.objects(
+        vendor_identifier=_normalized_device_id(identifier)))
 
     result = FieldSchema().dump(device.fields, many=True)
 

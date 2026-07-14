@@ -1,9 +1,8 @@
 from datetime import datetime
 
-from flask_mongoengine import MongoEngine
 from marshmallow_mongoengine import ModelSchema
 
-db = MongoEngine()
+from match_tracks.db import db
 
 
 # Models

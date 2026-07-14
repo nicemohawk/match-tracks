@@ -20,6 +20,12 @@ ADMIN_API_KEY = 'hi-bob'
 
 @pytest.fixture()
 def app():
+    # Several suites register throwaway routes via app.add_url_rule at test time
+    # (test_auth_rate_limit, test_entitlements, test_memberships). Flask 3.x locks
+    # setup methods once the app has served its first request, so clear that flag
+    # before each test to keep the dynamic-registration pattern working. Harness
+    # only — no effect on request handling or responses.
+    flask_app._got_first_request = False
     flask_app.config['TESTING'] = True
     # Auth/rate-limit knobs honored by match_tracks.auth / match_tracks.rate_limit.
     flask_app.config['API_TOKENS'] = {ADMIN_API_KEY: 'bob'}
