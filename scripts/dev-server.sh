@@ -29,7 +29,21 @@ VENV_PY="$VENV_DIR/bin/python"
 log() { printf '\033[1;36m▶ %s\033[0m\n' "$*"; }
 die() { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
-port_listening() { nc -z 127.0.0.1 "$1" >/dev/null 2>&1; }
+# Real connectivity check: ask the same driver the app uses (pymongo) to run a
+# ping, rather than just probing whether the TCP port is open. Confirms mongod
+# is actually accepting queries. Returns non-zero if it can't reach it quickly.
+mongo_ready() {
+  MONGO_PORT="$MONGO_PORT" "$VENV_PY" - <<'PY' >/dev/null 2>&1
+import os, sys
+from pymongo import MongoClient
+port = int(os.environ.get("MONGO_PORT", "27017"))
+try:
+    MongoClient("mongodb://127.0.0.1:%d/" % port,
+                serverSelectionTimeoutMS=1500).admin.command("ping")
+except Exception:
+    sys.exit(1)
+PY
+}
 
 # --- 1. venv ---------------------------------------------------------------
 if [[ ! -x "$VENV_PY" ]]; then
@@ -47,15 +61,17 @@ if [[ ! -x "$VENV_PY" ]]; then
 fi
 
 # --- 2. mongod -------------------------------------------------------------
-if port_listening "$MONGO_PORT"; then
-  log "mongod already listening on :$MONGO_PORT."
+if mongo_ready; then
+  log "mongod is up and answering on :$MONGO_PORT."
 else
   command -v mongod >/dev/null || die "mongod not installed (brew install mongodb-community)"
-  log "Starting mongod on :$MONGO_PORT (dbpath: $MONGO_DBPATH)…"
+  log "mongod not reachable on :$MONGO_PORT — starting it (dbpath: $MONGO_DBPATH)…"
   mkdir -p "$MONGO_DBPATH"
   mongod --dbpath "$MONGO_DBPATH" --port "$MONGO_PORT" \
          --fork --logpath "$MONGO_DBPATH/mongod.log" >/dev/null \
-    || die "mongod failed to start — see $MONGO_DBPATH/mongod.log"
+    || die "mongod failed to start — is something else on :$MONGO_PORT? see $MONGO_DBPATH/mongod.log"
+  # --fork returns once initialized, but confirm we can actually query it.
+  mongo_ready || die "mongod started but is not answering a ping — see $MONGO_DBPATH/mongod.log"
   log "mongod started (background; stop with: pkill mongod)."
 fi
 
