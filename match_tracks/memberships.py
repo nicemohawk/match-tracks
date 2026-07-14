@@ -47,6 +47,29 @@ def actor_denial(identifier):
     return jsonify({'reason': 'not_your_device'}), 403
 
 
+def principal_owns_team(team):
+    """True when the caller may manage `team` (admin, or the owning device).
+
+    Admin keys manage any team. A device owns a team only when the team has a
+    resolved owner that matches the caller's effective device id.
+    """
+    principal = current_principal()
+    if principal and principal.get('admin'):
+        return True
+    return (team.owner_device_id is not None
+            and effective_device_id() == team.owner_device_id)
+
+
+def owner_denial(team):
+    """None when the caller owns `team`; else a (response, 403) tuple.
+
+    A missing team is the caller's responsibility (404) before this is called.
+    """
+    if principal_owns_team(team):
+        return None
+    return jsonify({'reason': 'not_team_owner'}), 403
+
+
 # JOIN a team
 @memberships_blueprint.route('/devices/<identifier>/teams', methods=['POST'])
 @auth.login_required
@@ -60,8 +83,12 @@ def join_team(identifier):
     if not team_code:
         return jsonify({'reason': 'team_code_required'}), 400
 
-    if Team.objects(code=team_code).first() is None:
+    team = Team.objects(code=team_code).first()
+    if team is None:
+        # Auto-create an unowned, unarchived stub (offline-first: no join friction).
         Team(code=team_code, name=None).save()
+    elif team.archived:
+        return jsonify({'reason': 'team_archived'}), 409
 
     device_id = str(identifier).lower()
     existing = DeviceTeamMembership.objects(device_id=device_id, team_code=team_code).first()
@@ -104,6 +131,7 @@ def list_teams(identifier):
         teams.append({
             'team_code': membership.team_code,
             'team_name': team.name if team else None,
+            'archived': bool(team.archived) if team else False,
             'joined_at': membership.joined_at.strftime(TIMESTAMP_FORMAT)
             if membership.joined_at else None,
         })

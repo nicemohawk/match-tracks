@@ -18,7 +18,7 @@ def run():
 
     # 1. Indexes for the new collections (mongoengine creates them lazily; force now).
     for document_class in (LiveStatus, MatchComment, DeviceTeamMembership,
-                           Entitlement, SeedRequest):
+                           Entitlement, SeedRequest, Team):
         document_class.ensure_indexes()
     print("indexes ensured")
 

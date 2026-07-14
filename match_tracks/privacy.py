@@ -6,10 +6,11 @@ import uuid as uuid_module
 from datetime import datetime
 
 from flask import Blueprint, current_app, jsonify, request
+from mongoengine import NotUniqueError
 
 from match_tracks import field_service
-from match_tracks.auth import auth
-from match_tracks.memberships import actor_denial
+from match_tracks.auth import auth, effective_device_id
+from match_tracks.memberships import actor_denial, principal_owns_team
 from match_tracks.models import (CommunityField, Device, DeviceTeamMembership,
                                  Entitlement, LiveStatus, Match, MatchComment,
                                  Player, Team)
@@ -81,15 +82,42 @@ def create_team():
     if not code:
         return jsonify({'reason': 'code_required'}), 400
 
+    # Actor is the acting device (None for an admin without X-Device-ID).
+    actor = effective_device_id()
     existing = Team.objects(code=code).first()
-    if existing is not None:
-        return jsonify({'team': _team_json(existing)}), 200
+    if existing is None:
+        team = Team(code=code,
+                    name=json_data.get('name'),
+                    requires_consent=bool(json_data.get('requires_consent', False)),
+                    owner_device_id=actor,
+                    archived=False)
+        try:
+            team.save()
+        except NotUniqueError:
+            existing = Team.objects(code=code).first()  # lost a create race
+        else:
+            return jsonify({'team': _team_json(team)}), 201
 
-    team = Team(code=code,
-                name=json_data.get('name'),
-                requires_consent=bool(json_data.get('requires_consent', False)))
-    team.save()
-    return jsonify({'team': _team_json(team)}), 201
+    # Team already exists.
+    owns = principal_owns_team(existing)
+    unowned = existing.owner_device_id is None
+    if not owns and not unowned:
+        return jsonify({'reason': 'already_owned'}), 409
+
+    # Caller owns it (owner device or admin) or it is unowned. Only an acting
+    # device mutates: it adopts an unowned team and applies provided fields. An
+    # admin without an X-Device-ID has no device context, so a bare replay just
+    # returns the existing team unchanged (legacy idempotent behavior).
+    if actor is not None:
+        if unowned:
+            existing.owner_device_id = actor
+        if 'name' in json_data:
+            existing.name = json_data.get('name')
+        if 'requires_consent' in json_data:
+            existing.requires_consent = bool(json_data.get('requires_consent'))
+        existing.save()
+
+    return jsonify({'team': _team_json(existing)}), 200
 
 
 def _team_json(team):

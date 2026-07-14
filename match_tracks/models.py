@@ -56,11 +56,14 @@ class DeviceSchema(ModelSchema):
 # and merges observations of the same physical pitch into a single canonical
 # CommunityField row. All uuid values are stored as lowercase strings.
 class Team(db.Document):
-    meta = {'collection': 'teams'}
+    meta = {'collection': 'teams', 'indexes': ['owner_device_id']}
     code = db.StringField(primary_key=True)
     name = db.StringField(null=True)
     requires_consent = db.BooleanField(default=False)  # V2 §5: minors teams gate rosters
     created_at = db.DateTimeField(default=datetime.utcnow)
+    owner_device_id = db.StringField(null=True)  # lowercase device id; None = unowned
+    archived = db.BooleanField(default=False)  # soft-archive (reversible)
+    archived_at = db.DateTimeField(null=True)
 
 
 class Player(db.Document):
