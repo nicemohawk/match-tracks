@@ -19,6 +19,40 @@ device_schema = DeviceSchema()
 METERS_PER_DEGREE_LATITUDE = 111195.0
 
 
+def _normalized_device_id(identifier):
+    """Canonical lowercase form of a device id.
+
+    Clients generate their own UUIDs; Foundation's ``UUID.uuidString`` is
+    uppercase while Python's ``uuid4()`` is lowercase, so every device lookup
+    and write normalizes to lowercase to resolve to the same device regardless
+    of the casing on the wire.
+    """
+    return str(identifier).strip().lower()
+
+
+def _get_or_create_device(identifier):
+    """Resolve the Device for ``identifier`` (case-insensitive), provisioning
+    it on first write if absent.
+
+    The watch/phone are offline-first: they mint a device UUID and start
+    uploading with no separate registration call, so an unknown device is
+    created here rather than 404'd. Tolerant of the unique-index race between
+    two concurrent first uploads.
+    """
+    from mongoengine import NotUniqueError
+
+    vendor_identifier = _normalized_device_id(identifier)
+    device = Device.objects(vendor_identifier=vendor_identifier).first()
+    if device is not None:
+        return device
+    try:
+        device = Device(vendor_identifier=vendor_identifier)
+        device.save()
+        return device
+    except NotUniqueError:
+        return Device.objects(vendor_identifier=vendor_identifier).first()
+
+
 def _parse_timestamp(value):
     """Parse an incoming ISO-8601 timestamp string into a datetime.
 
@@ -92,6 +126,19 @@ def create_device():
     except ValidationError as err:
         return jsonify(err.messages), 422
 
+    # Normalize the client-generated id to lowercase (see _normalized_device_id).
+    if created_device.vendor_identifier:
+        created_device.vendor_identifier = created_device.vendor_identifier.lower()
+
+    # Idempotent registration: a device may already exist because a session or
+    # field upload auto-provisioned it. Update rather than fail the unique index.
+    existing = Device.objects(vendor_identifier=created_device.vendor_identifier).first()
+    if existing is not None:
+        if created_device.name is not None:
+            existing.name = created_device.name
+            existing.save()
+        return jsonify({'device': device_schema.dump(existing)})
+
     created_device.save()
 
     return jsonify({'device': created_device})
@@ -137,7 +184,8 @@ def update_device(identifier):
 # READ device sessions (legacy, unauthenticated)
 @app.route('/devices/<identifier>/sessions/', methods=['GET'])
 def get_device_sessions(identifier):
-    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+    device = Device.objects(
+        vendor_identifier=_normalized_device_id(identifier)).first_or_404()
 
     result = SessionSchema().dump(device.sessions, many=True)
 
@@ -162,7 +210,7 @@ def add_session(identifier):
     if denial:
         return denial
 
-    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+    device = _get_or_create_device(identifier)
     device_id = device.vendor_identifier.lower()
 
     # --- V2: the uploading device must belong to any team it tags (§6) ---
@@ -303,7 +351,8 @@ def _upsert_match_from_session(device_id, session_dict):
 # READ device fields (legacy, unauthenticated)
 @app.route('/devices/<identifier>/fields/', methods=['GET'])
 def get_device_fields(identifier):
-    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+    device = Device.objects(
+        vendor_identifier=_normalized_device_id(identifier)).first_or_404()
 
     result = FieldSchema().dump(device.fields, many=True)
 
@@ -325,7 +374,7 @@ def add_fields(identifier):
     if denial:
         return denial
 
-    device = Device.objects(vendor_identifier=str(identifier)).first_or_404()
+    device = _get_or_create_device(identifier)
 
     # --- Legacy embedded write: unchanged response shape ---
     fields = device.fields
