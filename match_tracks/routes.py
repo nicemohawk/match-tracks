@@ -225,15 +225,23 @@ def update_device(identifier):
     if not json_data:
         return jsonify({'result': 'No input data provided.'}), 400
 
-    # Validate and deserialize input
+    # Validate and deserialize input. The old marshmallow-mongoengine
+    # ModelSchema.update() applied the provided keys to the existing document;
+    # reimplement that inline against the hand-rolled schema (validate the
+    # payload for the 422 behavior, then patch only the keys that were sent).
     try:
-        updated_device = device_schema.update(device, json_data)
+        device_schema.load(json_data, partial=True)
     except ValidationError as err:
         return jsonify(err.messages), 422
 
-    updated_device.save()
+    if 'name' in json_data:
+        device.name = json_data['name']
+    if 'vendor_identifier' in json_data:
+        device.vendor_identifier = json_data['vendor_identifier'].lower()
 
-    return jsonify({'updated_device': device_schema.dump(updated_device)})
+    device.save()
+
+    return jsonify({'updated_device': device_schema.dump(device)})
 
 
 # DELETE single device — replaced in V2 by the compliance cascade in

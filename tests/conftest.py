@@ -5,14 +5,17 @@ Run the suite with:
 """
 
 import mongoengine
+import mongomock
 import pytest
 
-# Importing the package connects flask-mongoengine to the (possibly absent)
-# local mongod; we immediately swap the default connection for mongomock.
+# Importing the package connects mongoengine to the (possibly absent) local
+# mongod; we immediately swap the default connection for mongomock.
 from match_tracks import app as flask_app
 
+# mongoengine 0.29 removed the `mongomock://` URI, so wire mongomock in via the
+# mongo_client_class argument instead.
 mongoengine.disconnect_all()
-mongoengine.connect('matchdb', host='mongomock://localhost',
+mongoengine.connect('matchdb', mongo_client_class=mongomock.MongoClient,
                     uuidRepresentation='standard')
 
 ADMIN_API_KEY = 'hi-bob'

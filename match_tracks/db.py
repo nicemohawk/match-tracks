@@ -23,7 +23,10 @@ def init_app(app):
     """Register the default connection from config (MONGODB_DB / MONGODB_HOST,
     same keys flask-mongoengine read). Lazy — import/boot never fails if mongod
     is down."""
-    settings = {'db': app.config['MONGODB_DB']}
+    # pymongo 4 no longer defaults uuidRepresentation, so set it explicitly to
+    # keep UUID storage/round-tripping stable (matches conftest and the prior
+    # pymongo 3 behavior).
+    settings = {'db': app.config['MONGODB_DB'], 'uuidRepresentation': 'standard'}
     host = app.config.get('MONGODB_HOST')
     if host:
         settings['host'] = host

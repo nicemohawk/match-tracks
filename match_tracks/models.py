@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from marshmallow_mongoengine import ModelSchema
+from marshmallow import Schema, fields, post_dump, post_load, EXCLUDE
 
 from match_tracks.db import db
 
@@ -32,19 +32,69 @@ class Device(db.Document):
 
 
 # Schemas
-class SessionSchema(ModelSchema):
+#
+# Hand-rolled plain-marshmallow schemas replacing the marshmallow-mongoengine
+# ModelSchema (that git fork pinned marshmallow and blocked Python 3.12+).
+# These are byte-for-byte compatible with the old ModelSchema wire format:
+#   - dump omits keys whose value is None (and empty-dict tracks), exactly as
+#     the old ModelSchema did (it serialized the underlying mongoengine data);
+#   - recorded_at is marshmallow's default iso DateTime (naive isoformat with
+#     microseconds when present, no trailing 'Z') on dump, and tolerates a
+#     trailing 'Z' on load (legacy clients send "2026-07-13T18:04:00Z");
+#   - load() returns mongoengine model INSTANCES via @post_load, not dicts, and
+#     tolerates unknown wire keys (Meta.unknown = EXCLUDE).
+def _drop_empty(data):
+    # Match the old ModelSchema, which serialized only the non-empty underlying
+    # mongoengine data: a None value, an empty-dict track, or an empty
+    # sessions/fields list was absent from the wire, not rendered as null/{}/[].
+    return {key: value for key, value in data.items() if value not in (None, {}, [])}
+
+
+class _EmbeddedSchema(Schema):
+    """Shared behavior for the Session/Field embedded schemas."""
     class Meta:
-        model = Session
+        unknown = EXCLUDE
+
+    uuid = fields.String(allow_none=True, load_default=None)
+    track = fields.Raw(required=False, load_default=None)
+    recorded_at = fields.DateTime(required=False)
+
+    @post_dump
+    def _drop_empty(self, data, **kwargs):
+        return _drop_empty(data)
 
 
-class FieldSchema(ModelSchema):
+class SessionSchema(_EmbeddedSchema):
+    @post_load
+    def _make(self, data, **kwargs):
+        return Session(**data)
+
+
+class FieldSchema(_EmbeddedSchema):
+    @post_load
+    def _make(self, data, **kwargs):
+        return Field(**data)
+
+
+class DeviceSchema(Schema):
     class Meta:
-        model = Field
+        unknown = EXCLUDE
 
+    id = fields.Function(
+        lambda device: str(device.pk) if device.pk is not None else None,
+        dump_only=True)
+    name = fields.String(allow_none=True)
+    vendor_identifier = fields.String(required=False)
+    sessions = fields.Nested(SessionSchema, many=True, load_default=list)
+    fields = fields.Nested(FieldSchema, many=True, load_default=list)
 
-class DeviceSchema(ModelSchema):
-    class Meta:
-        model = Device
+    @post_dump
+    def _drop_empty(self, data, **kwargs):
+        return _drop_empty(data)
+
+    @post_load
+    def _make(self, data, **kwargs):
+        return Device(**data)
 
 
 # Community field database
