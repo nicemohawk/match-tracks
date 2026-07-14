@@ -7,14 +7,22 @@ db = MongoEngine()
 
 
 # Models
+# track is a permissive DictField ({"coordinates": [[lat, lon], ...]}), not a
+# GeoJSON LineStringField: an offline-first client legitimately produces empty
+# or single-point tracks (GPS denied, indoor, very short match), and the strict
+# LineString validator would 500 the whole batch on one trackless session. This
+# matches the V2 Match.track store and avoids the GeoJSON lon/lat swap (the wire
+# format is [lat, lon]). No code does geospatial queries against these embeds.
 class Session(db.EmbeddedDocument):
-    track = db.LineStringField()
+    track = db.DictField()
     recorded_at = db.DateTimeField(required=True, default=datetime.now)
+    uuid = db.StringField(null=True)  # V2: enables idempotent re-upload of the embedded copy
 
 
 class Field(db.EmbeddedDocument):
-    track = db.LineStringField()
+    track = db.DictField()
     recorded_at = db.DateTimeField(required=True, default=datetime.now)
+    uuid = db.StringField(null=True)  # V2: enables idempotent re-upload of the embedded copy
 
 
 class Device(db.Document):
@@ -48,17 +56,23 @@ class DeviceSchema(ModelSchema):
 # and merges observations of the same physical pitch into a single canonical
 # CommunityField row. All uuid values are stored as lowercase strings.
 class Team(db.Document):
-    meta = {'collection': 'teams'}
+    meta = {'collection': 'teams', 'indexes': ['owner_device_id']}
     code = db.StringField(primary_key=True)
     name = db.StringField(null=True)
+    requires_consent = db.BooleanField(default=False)  # V2 §5: minors teams gate rosters
     created_at = db.DateTimeField(default=datetime.utcnow)
+    owner_device_id = db.StringField(null=True)  # lowercase device id; None = unowned
+    archived = db.BooleanField(default=False)  # soft-archive (reversible)
+    archived_at = db.DateTimeField(null=True)
 
 
 class Player(db.Document):
     meta = {'collection': 'players'}
     device_id = db.StringField(required=True, unique=True)
     name = db.StringField(null=True)
-    team_code = db.StringField(null=True)
+    team_code = db.StringField(null=True)  # V2: now the DEFAULT team; memberships live in device_teams
+    initials_only = db.BooleanField(default=False)  # V2 §5: render "B. L." everywhere
+    consent_acknowledged_at = db.DateTimeField(null=True)  # V2 §5
     updated_at = db.DateTimeField(default=datetime.utcnow)
 
 
@@ -68,6 +82,7 @@ class CommunityField(db.Document):
         'indexes': [
             ('rect_center_lat', 'rect_center_lon'),
             'merged_into',
+            'sport_id',
         ],
     }
     uuid = db.StringField(primary_key=True)
@@ -84,6 +99,8 @@ class CommunityField(db.Document):
     confidence = db.FloatField()
     has_trained_observation = db.BooleanField(default=False)
     contributing_device_ids = db.ListField(db.StringField())
+    sport_id = db.StringField(null=True)  # V2 §4: None means soccer
+    seeded = db.BooleanField(default=False)  # V2 §8: from satellite imagery, unconfirmed
     created_at = db.DateTimeField(default=datetime.utcnow)
     merged_into = db.StringField(null=True)  # canonical uuid when this row is an alias stub
 
@@ -102,4 +119,85 @@ class Match(db.Document):
     events = db.ListField(db.DictField())
     stats = db.DictField()
     team_code = db.StringField(null=True)
+    sport_id = db.StringField(null=True)  # V2 §4: None means soccer
     created_at = db.DateTimeField(default=datetime.utcnow)
+
+
+# V2 documents (see docs/backend-v2-architecture.md — the binding contract)
+
+class LiveStatus(db.Document):
+    """Latest live-match snapshot per device; overwritten on every accepted update."""
+    meta = {'collection': 'live_status', 'indexes': ['team_code']}
+    device_id = db.StringField(primary_key=True)
+    team_code = db.StringField(null=True)
+    match_uuid = db.StringField(null=True)
+    sequence = db.IntField(default=0)
+    updated_at = db.DateTimeField(default=datetime.utcnow)
+    elapsed_s = db.FloatField(null=True)
+    heart_rate = db.FloatField(null=True)
+    distance_m = db.FloatField(null=True)
+    current_speed = db.FloatField(null=True)
+    on_pitch = db.BooleanField(default=True)
+    us_goals = db.IntField(null=True)
+    them_goals = db.IntField(null=True)
+    x = db.FloatField(null=True)  # normalized field coords, when known
+    y = db.FloatField(null=True)
+
+
+class MatchComment(db.Document):
+    """Team chat attached to a match. Soft-deleted rather than removed."""
+    meta = {'collection': 'match_comments', 'indexes': ['match_uuid', 'posted_at']}
+    uuid = db.StringField(primary_key=True)
+    match_uuid = db.StringField(required=True)
+    team_code = db.StringField(null=True)
+    author_device = db.StringField(null=True)
+    author_name = db.StringField(null=True)  # denormalized, initials-respecting at post time
+    body = db.StringField(max_length=1000)
+    posted_at = db.DateTimeField(default=datetime.utcnow)
+    deleted = db.BooleanField(default=False)
+    author_tombstoned = db.BooleanField(default=False)
+
+
+class DeviceTeamMembership(db.Document):
+    """A device may belong to many teams; players.team_code stays the default."""
+    meta = {
+        'collection': 'device_teams',
+        'indexes': [{'fields': ['device_id', 'team_code'], 'unique': True}, 'team_code'],
+    }
+    device_id = db.StringField(required=True)
+    team_code = db.StringField(required=True)
+    joined_at = db.DateTimeField(default=datetime.utcnow)
+
+
+class Entitlement(db.Document):
+    """A verified StoreKit subscription for one device."""
+    meta = {
+        'collection': 'entitlements',
+        'indexes': [{'fields': ['device_id', 'product_id'], 'unique': True}],
+    }
+    device_id = db.StringField(required=True)
+    product_id = db.StringField(required=True)
+    expires_at = db.DateTimeField(null=True)
+    environment = db.StringField(null=True)
+
+
+class SportProfile(db.Document):
+    """Per-sport plausible pitch dimensions (config data, not code constants)."""
+    meta = {'collection': 'sport_profiles'}
+    sport_id = db.StringField(primary_key=True)
+    min_length_m = db.FloatField(required=True)
+    max_length_m = db.FloatField(required=True)
+    min_width_m = db.FloatField(required=True)
+    max_width_m = db.FloatField(required=True)
+
+
+class SeedRequest(db.Document):
+    """A queued satellite-imagery field-seeding job."""
+    meta = {'collection': 'seed_requests', 'indexes': ['device_id', 'status']}
+    uuid = db.StringField(primary_key=True)
+    device_id = db.StringField(required=True)
+    latitude = db.FloatField(required=True)
+    longitude = db.FloatField(required=True)
+    radius_m = db.FloatField(default=1500.0)
+    requested_at = db.DateTimeField(default=datetime.utcnow)
+    status = db.StringField(default='pending')  # pending | completed | failed

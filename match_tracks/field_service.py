@@ -31,7 +31,7 @@ observation count and asymptotically approaches — but never reaches — 1.0.
 import uuid as uuid_module
 from typing import Optional, Sequence
 
-from match_tracks import geometry
+from match_tracks import geometry, sports_config
 from match_tracks.geometry import FittedRect
 from match_tracks.models import CommunityField
 
@@ -79,13 +79,14 @@ def resolve_field_uuid(field_uuid: Optional[str]) -> Optional[CommunityField]:
     return None
 
 
-def find_matching_canonical_field(rect: FittedRect) -> Optional[CommunityField]:
+def find_matching_canonical_field(rect: FittedRect,
+                                  sport_id: Optional[str] = None) -> Optional[CommunityField]:
     """Find the canonical field describing the same physical pitch as ``rect``.
 
     Prefilters canonical rows (``merged_into=None``) by a small bounding box
     around the rectangle center, then applies ``geometry.rects_match_same_field``.
-    If several rows match, returns the one whose center is nearest by haversine
-    distance.
+    Fields only match within the same sport (None ≡ soccer). If several rows
+    match, returns the one whose center is nearest by haversine distance.
     """
     candidates = CommunityField.objects(
         merged_into=None,
@@ -98,6 +99,8 @@ def find_matching_canonical_field(rect: FittedRect) -> Optional[CommunityField]:
     best_field = None
     best_distance = None
     for candidate in candidates:
+        if not sports_config.sports_match(candidate.sport_id, sport_id):
+            continue
         candidate_rect = _rect_from_field(candidate)
         if not geometry.rects_match_same_field(candidate_rect, rect):
             continue
@@ -149,6 +152,8 @@ def merge_observation_into_field(canonical: CommunityField, rect: FittedRect, *,
         canonical.contributing_device_ids.append(device_id)
 
     canonical.has_trained_observation = canonical.has_trained_observation or observed_trained
+    # A real observation confirms a satellite-seeded field.
+    canonical.seeded = False
 
     # Source upgrade: multiple contributors make it community-sourced;
     # otherwise a trained observation beats an inferred-only field.
@@ -169,17 +174,19 @@ def merge_observation_into_field(canonical: CommunityField, rect: FittedRect, *,
 
 def ingest_trained_field(device_id: str, field_uuid: str,
                          outline_coordinates: Sequence[Sequence[float]],
-                         name: Optional[str] = None) -> Optional[CommunityField]:
+                         name: Optional[str] = None,
+                         sport_id: Optional[str] = None) -> Optional[CommunityField]:
     """Ingest a device-uploaded trained field outline.
 
     Idempotent on ``field_uuid``: if the uuid already resolves (canonical or
     alias), returns the canonical without bumping counts (client retry safety).
     Otherwise fits a rectangle to the outline (returning ``None`` on a
     degenerate outline — caller treats this as non-fatal). A matching canonical
-    field absorbs the observation and an alias stub is created for the incoming
-    uuid; with no match a new canonical field is stored.
+    field of the same sport absorbs the observation and an alias stub is
+    created for the incoming uuid; with no match a new canonical field is stored.
     """
     normalized_uuid = field_uuid.lower()
+    normalized_sport = sports_config.normalized_sport_id(sport_id)
 
     existing = resolve_field_uuid(normalized_uuid)
     if existing is not None:
@@ -189,7 +196,7 @@ def ingest_trained_field(device_id: str, field_uuid: str,
     if rect is None:
         return None
 
-    canonical = find_matching_canonical_field(rect)
+    canonical = find_matching_canonical_field(rect, sport_id=normalized_sport)
     if canonical is not None:
         merge_observation_into_field(
             canonical, rect,
@@ -222,6 +229,7 @@ def ingest_trained_field(device_id: str, field_uuid: str,
         confidence=compute_confidence(CONFIDENCE_BASE_TRAINED, 1),
         has_trained_observation=True,
         contributing_device_ids=[device_id],
+        sport_id=normalized_sport,
     )
     new_field.save()
     return new_field
@@ -229,17 +237,23 @@ def ingest_trained_field(device_id: str, field_uuid: str,
 
 def ingest_track_observation(device_id: str,
                              track_coordinates: Sequence[Sequence[float]],
-                             field_uuid: Optional[str] = None) -> Optional[CommunityField]:
+                             field_uuid: Optional[str] = None,
+                             sport_id: Optional[str] = None) -> Optional[CommunityField]:
     """Ingest a match GPS track as evidence of field geometry.
 
-    Fits the track to a rectangle. A degenerate track yields no geometry: if a
-    known ``field_uuid`` was supplied the resolved canonical is returned
-    unmodified (for match association), otherwise ``None``. With a usable
-    rectangle the observation is merged into the resolved field (if any), else
-    into a matching canonical field, else a new server-uuid inferred canonical
-    field is created.
+    Fits the track to a rectangle using the sport's plausibility bounds
+    (None ≡ soccer). A degenerate track yields no geometry: if a known
+    ``field_uuid`` was supplied the resolved canonical is returned unmodified
+    (for match association), otherwise ``None``. With a usable rectangle the
+    observation is merged into the resolved field (if any), else into a
+    matching same-sport canonical field, else a new server-uuid inferred
+    canonical field is created.
     """
-    rect = geometry.fit_track_as_field_observation(track_coordinates)
+    normalized_sport = sports_config.normalized_sport_id(sport_id)
+    length_bounds, width_bounds = sports_config.plausibility_bounds(normalized_sport)
+
+    rect = geometry.fit_track_as_field_observation(
+        track_coordinates, length_bounds=length_bounds, width_bounds=width_bounds)
     if rect is None:
         return resolve_field_uuid(field_uuid)
 
@@ -248,7 +262,7 @@ def ingest_track_observation(device_id: str,
         return merge_observation_into_field(
             resolved, rect, outline=None, device_id=device_id, observed_trained=False)
 
-    canonical = find_matching_canonical_field(rect)
+    canonical = find_matching_canonical_field(rect, sport_id=normalized_sport)
     if canonical is not None:
         return merge_observation_into_field(
             canonical, rect, outline=None, device_id=device_id, observed_trained=False)
@@ -268,6 +282,7 @@ def ingest_track_observation(device_id: str,
         confidence=compute_confidence(CONFIDENCE_BASE_INFERRED, 1),
         has_trained_observation=False,
         contributing_device_ids=[device_id],
+        sport_id=normalized_sport,
     )
     new_field.save()
     return new_field

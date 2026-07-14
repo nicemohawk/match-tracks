@@ -14,7 +14,7 @@ Acceptance criteria covered (see task spec):
 """
 
 from tests.helpers import make_field_outline, make_match_track, make_field_payload, \
-    make_session_payload, register_device
+    make_session_payload, register_device, new_uuid
 
 BASE_LATITUDE = 39.33
 BASE_LONGITUDE = -82.10
@@ -113,3 +113,65 @@ def test_legacy_sessions_upload_requires_authentication(client, admin_headers):
     )
 
     assert response.status_code == 401
+
+
+def test_batch_with_empty_track_session_does_not_500(client, admin_headers):
+    """A trackless session (GPS off / indoor / very short match) must not
+    poison the whole batch: the upload succeeds and every session is stored."""
+    device_uuid = register_device(client, admin_headers)
+    good = make_session_payload(new_uuid(), '2026-07-14T01:00:00Z',
+                                make_match_track(BASE_LATITUDE, BASE_LONGITUDE, num_points=10))
+    trackless = make_session_payload(new_uuid(), '2026-07-14T01:05:00Z', [])  # coordinates: []
+    single_point = make_session_payload(new_uuid(), '2026-07-14T01:10:00Z',
+                                        [[BASE_LATITUDE, BASE_LONGITUDE]])
+    resp = client.post(f'/devices/{device_uuid}/sessions/',
+                       json={'sessions': [good, trackless, single_point]},
+                       headers=admin_headers)
+    assert resp.status_code == 200
+    stored = client.get(f'/devices/{device_uuid}/sessions/').get_json()['sessions']
+    assert len(stored) == 3
+    assert stored[1]['track']['coordinates'] == []  # empty track round-trips
+
+
+def test_session_upload_auto_provisions_unregistered_device(client, admin_headers):
+    """Offline-first: uploading to a never-registered device creates it
+    (case-insensitively) instead of 404'ing. The app sends Foundation-style
+    UPPERCASE UUIDs; they must resolve to the same lowercase-stored device."""
+    upper = new_uuid().upper()  # no register_device() — device does not exist
+    payload = make_session_payload(
+        new_uuid(), '2026-07-14T02:00:00Z',
+        make_match_track(BASE_LATITUDE, BASE_LONGITUDE, num_points=10))
+    resp = client.post(f'/devices/{upper}/sessions/',
+                       json={'sessions': [payload]}, headers=admin_headers)
+    assert resp.status_code == 200
+    # Readable via either casing; the V2 match is attributed to the device.
+    assert client.get(f'/devices/{upper.lower()}/sessions/').get_json()['sessions']
+    assert client.get(f'/devices/{upper}/sessions/').get_json()['sessions']
+    matches = client.get(f'/devices/{upper}/matches', headers=admin_headers).get_json()
+    assert matches['total'] == 1
+
+
+def test_field_upload_auto_provisions_unregistered_device(client, admin_headers):
+    upper = new_uuid().upper()
+    field_payload = make_field_payload(
+        new_uuid(), '2026-07-14T02:00:00Z',
+        make_field_outline(BASE_LATITUDE, BASE_LONGITUDE))
+    resp = client.post(f'/devices/{upper}/fields/',
+                       json={'fields': [field_payload]}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert client.get(f'/devices/{upper.lower()}/fields/').get_json()['fields']
+
+
+def test_registration_is_idempotent_after_auto_provision(client, admin_headers):
+    """POST /devices/ for an already-auto-provisioned device updates it (200),
+    it does not fail the unique index with a 500."""
+    upper = new_uuid().upper()
+    payload = make_session_payload(
+        new_uuid(), '2026-07-14T02:00:00Z',
+        make_match_track(BASE_LATITUDE, BASE_LONGITUDE, num_points=10))
+    assert client.post(f'/devices/{upper}/sessions/',
+                       json={'sessions': [payload]}, headers=admin_headers).status_code == 200
+    resp = client.post('/devices/',
+                       json={'vendor_identifier': upper, 'name': 'Late Registration'},
+                       headers=admin_headers)
+    assert resp.status_code == 200
