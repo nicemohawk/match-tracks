@@ -1,7 +1,38 @@
 # match-tracks
 
-A Flask + MongoDB API that stores GPS tracks recorded by the Match Tracks watch/phone app,
-plus a crowd-sourced **community field database** and team stat aggregation.
+Match Tracks: an Apple Watch soccer tracker with an iOS companion app and a
+Flask + MongoDB backend providing a crowd-sourced **community field database**
+and team stat aggregation.
+
+## The apps (`MatchTracks/`)
+
+An xcodegen project (`MatchTracks/project.yml`) with three parts:
+
+- **MatchTracksKit** (`MatchTracks/Packages/MatchTracksKit`) — shared Swift
+  package: data models, field-touchline detection (density filter + convex
+  hull + rotating-calipers rectangle fit, robust to rotated and adjacent
+  pitches), run segmentation, heatmap binning, position classification,
+  workrate analysis, substitution-aware playing time, and the backend sync
+  client. Fully unit-tested: `cd MatchTracks/Packages/MatchTracksKit && swift test`.
+- **MatchTracksWatch** (watchOS 11) — the in-game experience: a `.soccer`
+  HealthKit workout session with GPS + heart-rate capture and a native-Workout
+  style vertically paged UI (Controls / Metrics / Game). Double Tap flags a
+  moment mid-play; score, personal goals/assists, substitutions, and periods
+  are one tap each with undo. Completed matches transfer to the phone over
+  WatchConnectivity with retry.
+- **MatchTracks** (iOS 18) — the analysis app: receives matches from the
+  watch, detects the field against the local + community field database, and
+  renders the track map with touchlines, positional heatmap, individual runs,
+  workrate/speed-zone stats, and the event timeline. Uploads matches to the
+  backend and shows aggregated team stats across players.
+
+Build: `brew install xcodegen`, then
+
+```
+cd MatchTracks && xcodegen generate && open MatchTracks.xcodeproj
+```
+
+## The backend
 
 ## API overview
 
