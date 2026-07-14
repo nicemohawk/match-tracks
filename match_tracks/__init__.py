@@ -1,7 +1,8 @@
 import os
 
 from flask import Flask
-from flask_mongoengine import MongoEngine
+
+from match_tracks import db as db_module
 
 app = Flask(__name__,  instance_relative_config=True)
 
@@ -26,7 +27,7 @@ try:
 except FileNotFoundError as err:
     print("No instance config file found")
 
-db = MongoEngine(app)
+db_module.init_app(app)
 
 from . import routes
 

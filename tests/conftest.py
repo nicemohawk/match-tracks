@@ -5,14 +5,17 @@ Run the suite with:
 """
 
 import mongoengine
+import mongomock
 import pytest
 
-# Importing the package connects flask-mongoengine to the (possibly absent)
-# local mongod; we immediately swap the default connection for mongomock.
+# Importing the package connects mongoengine to the (possibly absent) local
+# mongod; we immediately swap the default connection for mongomock.
 from match_tracks import app as flask_app
 
+# mongoengine 0.29 removed the `mongomock://` URI, so wire mongomock in via the
+# mongo_client_class argument instead.
 mongoengine.disconnect_all()
-mongoengine.connect('matchdb', host='mongomock://localhost',
+mongoengine.connect('matchdb', mongo_client_class=mongomock.MongoClient,
                     uuidRepresentation='standard')
 
 ADMIN_API_KEY = 'hi-bob'
@@ -20,6 +23,12 @@ ADMIN_API_KEY = 'hi-bob'
 
 @pytest.fixture()
 def app():
+    # Several suites register throwaway routes via app.add_url_rule at test time
+    # (test_auth_rate_limit, test_entitlements, test_memberships). Flask 3.x locks
+    # setup methods once the app has served its first request, so clear that flag
+    # before each test to keep the dynamic-registration pattern working. Harness
+    # only — no effect on request handling or responses.
+    flask_app._got_first_request = False
     flask_app.config['TESTING'] = True
     # Auth/rate-limit knobs honored by match_tracks.auth / match_tracks.rate_limit.
     flask_app.config['API_TOKENS'] = {ADMIN_API_KEY: 'bob'}
