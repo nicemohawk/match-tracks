@@ -14,7 +14,7 @@ Acceptance criteria covered (see task spec):
 """
 
 from tests.helpers import make_field_outline, make_match_track, make_field_payload, \
-    make_session_payload, register_device
+    make_session_payload, register_device, new_uuid
 
 BASE_LATITUDE = 39.33
 BASE_LONGITUDE = -82.10
@@ -113,3 +113,21 @@ def test_legacy_sessions_upload_requires_authentication(client, admin_headers):
     )
 
     assert response.status_code == 401
+
+
+def test_batch_with_empty_track_session_does_not_500(client, admin_headers):
+    """A trackless session (GPS off / indoor / very short match) must not
+    poison the whole batch: the upload succeeds and every session is stored."""
+    device_uuid = register_device(client, admin_headers)
+    good = make_session_payload(new_uuid(), '2026-07-14T01:00:00Z',
+                                make_match_track(BASE_LATITUDE, BASE_LONGITUDE, num_points=10))
+    trackless = make_session_payload(new_uuid(), '2026-07-14T01:05:00Z', [])  # coordinates: []
+    single_point = make_session_payload(new_uuid(), '2026-07-14T01:10:00Z',
+                                        [[BASE_LATITUDE, BASE_LONGITUDE]])
+    resp = client.post(f'/devices/{device_uuid}/sessions/',
+                       json={'sessions': [good, trackless, single_point]},
+                       headers=admin_headers)
+    assert resp.status_code == 200
+    stored = client.get(f'/devices/{device_uuid}/sessions/').get_json()['sessions']
+    assert len(stored) == 3
+    assert stored[1]['track']['coordinates'] == []  # empty track round-trips

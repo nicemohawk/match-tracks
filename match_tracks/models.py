@@ -7,14 +7,20 @@ db = MongoEngine()
 
 
 # Models
+# track is a permissive DictField ({"coordinates": [[lat, lon], ...]}), not a
+# GeoJSON LineStringField: an offline-first client legitimately produces empty
+# or single-point tracks (GPS denied, indoor, very short match), and the strict
+# LineString validator would 500 the whole batch on one trackless session. This
+# matches the V2 Match.track store and avoids the GeoJSON lon/lat swap (the wire
+# format is [lat, lon]). No code does geospatial queries against these embeds.
 class Session(db.EmbeddedDocument):
-    track = db.LineStringField()
+    track = db.DictField()
     recorded_at = db.DateTimeField(required=True, default=datetime.now)
     uuid = db.StringField(null=True)  # V2: enables idempotent re-upload of the embedded copy
 
 
 class Field(db.EmbeddedDocument):
-    track = db.LineStringField()
+    track = db.DictField()
     recorded_at = db.DateTimeField(required=True, default=datetime.now)
     uuid = db.StringField(null=True)  # V2: enables idempotent re-upload of the embedded copy
 
