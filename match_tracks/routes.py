@@ -53,6 +53,65 @@ def _get_or_create_device(identifier):
         return Device.objects(vendor_identifier=vendor_identifier).first()
 
 
+def _ensure_team(team_code):
+    """Create a stub Team row the first time a code is referenced, tolerating a
+    concurrent create (two uploads for a brand-new team code at once)."""
+    from mongoengine import NotUniqueError
+
+    if not team_code or Team.objects(code=team_code).first() is not None:
+        return
+    try:
+        Team(code=team_code, name=None).save()
+    except NotUniqueError:
+        pass  # another request created it first — fine
+
+
+def _upsert_player(device_id, player_name, team_code):
+    """Last-write-wins Player upsert keyed by device, safe against a concurrent
+    first-insert. Without this, two simultaneous uploads for a new device both
+    insert and the second hits the unique device_id index (500)."""
+    from mongoengine import NotUniqueError
+
+    if player_name is None and team_code is None:
+        return
+    for attempt in range(2):
+        player = Player.objects(device_id=device_id).first() or Player(device_id=device_id)
+        if player_name is not None:
+            player.name = player_name
+        if team_code is not None:
+            player.team_code = team_code
+        player.updated_at = datetime.utcnow()
+        try:
+            player.save()
+            return
+        except NotUniqueError:
+            if attempt == 0:
+                continue  # a concurrent insert won; retry as an update of the now-existing row
+            raise
+
+
+def _save_match_record(match_uuid, existing_match, field_values):
+    """Save a Match idempotently by uuid, tolerating a concurrent insert of the
+    same uuid (the client's retry queue may double-fire one session)."""
+    from mongoengine import NotUniqueError
+
+    match = existing_match or Match(uuid=match_uuid)
+    for key, value in field_values.items():
+        setattr(match, key, value)
+    try:
+        match.save()
+        return
+    except NotUniqueError:
+        pass
+    # The concurrent insert won; reload the winning row and apply our values.
+    match = Match.objects(uuid=match_uuid).first()
+    if match is None:
+        raise RuntimeError('match vanished after duplicate-key on insert')
+    for key, value in field_values.items():
+        setattr(match, key, value)
+    match.save()
+
+
 def _parse_timestamp(value):
     """Parse an incoming ISO-8601 timestamp string into a datetime.
 
@@ -256,6 +315,8 @@ def _validate_session_team_memberships(device_id, session_dicts):
     legacy default team) is auto-joined to the tagged team — smooth V1→V2
     migration for solo users.
     """
+    from mongoengine import NotUniqueError
+
     from match_tracks.memberships import is_member
     from match_tracks.models import DeviceTeamMembership
 
@@ -280,9 +341,11 @@ def _validate_session_team_memberships(device_id, session_dicts):
             teams_to_join.append(team_code)
 
     for team_code in teams_to_join:
-        if Team.objects(code=team_code).first() is None:
-            Team(code=team_code, name=None).save()
-        DeviceTeamMembership(device_id=device_id, team_code=team_code).save()
+        _ensure_team(team_code)
+        try:
+            DeviceTeamMembership(device_id=device_id, team_code=team_code).save()
+        except NotUniqueError:
+            pass  # a concurrent auto-join for the same (device, team) won — fine
 
     return None
 
@@ -319,33 +382,23 @@ def _upsert_match_from_session(device_id, session_dict):
     elif field_uuid_value is None:
         field_uuid_value = existing_match.field_uuid
 
-    # Team: create a stub row when a code is referenced for the first time.
-    if team_code and Team.objects(code=team_code).first() is None:
-        Team(code=team_code, name=None).save()
-
-    # Player: last-write-wins upsert keyed by device.
-    if player_name is not None or team_code is not None:
-        player = Player.objects(device_id=device_id).first() or Player(device_id=device_id)
-        if player_name is not None:
-            player.name = player_name
-        if team_code is not None:
-            player.team_code = team_code
-        player.updated_at = datetime.utcnow()
-        player.save()
+    # Team stub + last-write-wins Player upsert (both concurrency-safe).
+    _ensure_team(team_code)
+    _upsert_player(device_id, player_name, team_code)
 
     from match_tracks.sports_config import normalized_sport_id
 
-    match = existing_match or Match(uuid=match_uuid)
-    match.device_id = device_id
-    match.field_uuid = field_uuid_value
-    match.recorded_at = _parse_timestamp(session_dict.get('recorded_at'))
-    match.duration_s = session_dict.get('duration_s')
-    match.track = track
-    match.events = session_dict.get('events') or []
-    match.stats = session_dict.get('stats') or {}
-    match.team_code = team_code
-    match.sport_id = normalized_sport_id(sport_id)
-    match.save()
+    _save_match_record(match_uuid, existing_match, dict(
+        device_id=device_id,
+        field_uuid=field_uuid_value,
+        recorded_at=_parse_timestamp(session_dict.get('recorded_at')),
+        duration_s=session_dict.get('duration_s'),
+        track=track,
+        events=session_dict.get('events') or [],
+        stats=session_dict.get('stats') or {},
+        team_code=team_code,
+        sport_id=normalized_sport_id(sport_id),
+    ))
 
 
 # READ device fields (legacy, unauthenticated)
