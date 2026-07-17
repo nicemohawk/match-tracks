@@ -23,7 +23,7 @@ squared-Euclidean assignment cost. The winning template is the one with the
 lowest MEAN EUCLIDEAN distance between real players and their assigned slots.
 """
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from flask import Blueprint, jsonify, request
 
@@ -31,6 +31,7 @@ from match_tracks import memberships, privacy
 from match_tracks.auth import auth
 from match_tracks.models import Match, Player, Team
 from match_tracks.rate_limit import rate_limited
+from match_tracks.timeutils import utcnow
 
 formation_blueprint = Blueprint('formation', __name__)
 
@@ -324,7 +325,7 @@ def _collect_player_means(team_code, window_days):
     per-match ``stats.mean_x`` / ``stats.mean_y`` across every qualifying match.
     Matches lacking numeric mean coordinates are skipped.
     """
-    cutoff = datetime.utcnow() - timedelta(days=window_days)
+    cutoff = utcnow() - timedelta(days=window_days)
     accumulator = {}  # device_id -> [sum_x, sum_y, count]
 
     for match in Match.objects(team_code=team_code, recorded_at__gte=cutoff):

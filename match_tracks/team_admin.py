@@ -7,7 +7,7 @@ owner (or an admin key) may rename, archive, or toggle its consent gate.
 Deletion is a reversible soft-archive that preserves all matches and stats.
 """
 
-from datetime import datetime
+from datetime import timezone
 
 from flask import Blueprint, jsonify, request
 
@@ -15,6 +15,7 @@ from match_tracks.auth import (auth, current_principal, effective_device_id)
 from match_tracks.memberships import (owner_denial, principal_owns_team,
                                      require_member)
 from match_tracks.models import DeviceTeamMembership, Player, Team
+from match_tracks.timeutils import utcnow
 
 team_admin_blueprint = Blueprint('team_admin', __name__)
 
@@ -36,7 +37,8 @@ def _team_detail_json(team):
         'name': team.name,
         'requires_consent': bool(team.requires_consent),
         'archived': bool(team.archived),
-        'created_at': team.created_at.strftime(TIMESTAMP_FORMAT) if team.created_at else None,
+        'created_at': (team.created_at.astimezone(timezone.utc).strftime(TIMESTAMP_FORMAT)
+                       if team.created_at else None),
         'member_count': _member_count(team.code),
         'is_owner': principal_owns_team(team),
     }
@@ -74,7 +76,7 @@ def patch_team(code):
     if 'archived' in json_data:
         archived = bool(json_data.get('archived'))
         team.archived = archived
-        team.archived_at = datetime.utcnow() if archived else None
+        team.archived_at = utcnow() if archived else None
     team.save()
     return jsonify({'team': _team_detail_json(team)}), 200
 
@@ -93,7 +95,7 @@ def delete_team(code):
     # Idempotent: archiving an already-archived team still returns 200. Matches,
     # memberships, and stats are all preserved.
     team.archived = True
-    team.archived_at = datetime.utcnow()
+    team.archived_at = utcnow()
     team.save()
     return jsonify({'code': code, 'archived': True}), 200
 

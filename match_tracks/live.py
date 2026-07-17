@@ -8,7 +8,7 @@ latest positions. Updates are sequence-guarded so an out-of-order or replayed
 snapshot never clobbers a newer one.
 """
 
-from datetime import datetime, timedelta
+from datetime import timedelta, timezone
 
 from flask import Blueprint, jsonify, request
 
@@ -17,6 +17,7 @@ from match_tracks.auth import auth
 from match_tracks.models import LiveStatus, Player, Team
 from match_tracks.privacy import consent_blocked, player_display_name
 from match_tracks.rate_limit import rate_limited
+from match_tracks.timeutils import parse_iso, utcnow
 
 live_blueprint = Blueprint('live', __name__)
 
@@ -25,27 +26,25 @@ STALE_AFTER_SECONDS = 30
 
 
 def _parse_timestamp(value):
-    """Parse an incoming ISO-8601 timestamp, tolerating a trailing 'Z'.
+    """Parse an incoming ISO-8601 timestamp to an aware UTC datetime.
 
-    Python 3.9's ``datetime.fromisoformat`` rejects the trailing 'Z', so strip
-    it first. Returns ``None`` for empty or unparseable input.
+    Tolerates a trailing 'Z' or an offset; a naive input is assumed UTC.
+    Returns ``None`` for empty or unparseable input.
     """
-    if not value:
-        return None
-    text = str(value).strip()
-    if text.endswith('Z'):
-        text = text[:-1]
     try:
-        return datetime.fromisoformat(text)
+        return parse_iso(value)
     except ValueError:
         return None
 
 
 def _format_timestamp(value):
-    """Serialize a datetime as ``...Z`` (UTC, second precision), or ``None``."""
+    """Serialize a datetime as ``...Z`` (UTC, second precision), or ``None``.
+
+    Normalizes to UTC first so a non-UTC-aware value can never mis-serialize.
+    """
     if value is None:
         return None
-    return value.strftime(TIMESTAMP_FORMAT)
+    return value.astimezone(timezone.utc).strftime(TIMESTAMP_FORMAT)
 
 
 # POST a live snapshot for one device
@@ -92,7 +91,7 @@ def post_live_status(device_id):
             and (existing.sequence or 0) >= incoming_sequence):
         return jsonify({'stale': True}), 200
 
-    updated_at = _parse_timestamp(json_data.get('timestamp')) or datetime.utcnow()
+    updated_at = _parse_timestamp(json_data.get('timestamp')) or utcnow()
 
     live_status = LiveStatus(device_id=normalized_device_id)
     live_status.team_code = team_code
@@ -129,7 +128,7 @@ def get_team_live(code):
         return member_denial
 
     team = Team.objects(code=code).first()
-    now = datetime.utcnow()
+    now = utcnow()
     stale_cutoff = now - timedelta(seconds=STALE_AFTER_SECONDS)
 
     players = []

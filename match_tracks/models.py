@@ -1,8 +1,7 @@
-from datetime import datetime
-
 from marshmallow import Schema, fields, post_dump, post_load, EXCLUDE
 
 from match_tracks.db import db
+from match_tracks.timeutils import parse_iso, to_iso_z, utcnow
 
 
 # Models
@@ -14,13 +13,13 @@ from match_tracks.db import db
 # format is [lat, lon]). No code does geospatial queries against these embeds.
 class Session(db.EmbeddedDocument):
     track = db.DictField()
-    recorded_at = db.DateTimeField(required=True, default=datetime.now)
+    recorded_at = db.DateTimeField(required=True, default=utcnow)
     uuid = db.StringField(null=True)  # V2: enables idempotent re-upload of the embedded copy
 
 
 class Field(db.EmbeddedDocument):
     track = db.DictField()
-    recorded_at = db.DateTimeField(required=True, default=datetime.now)
+    recorded_at = db.DateTimeField(required=True, default=utcnow)
     uuid = db.StringField(null=True)  # V2: enables idempotent re-upload of the embedded copy
 
 
@@ -38,9 +37,9 @@ class Device(db.Document):
 # These are byte-for-byte compatible with the old ModelSchema wire format:
 #   - dump omits keys whose value is None (and empty-dict tracks), exactly as
 #     the old ModelSchema did (it serialized the underlying mongoengine data);
-#   - recorded_at is marshmallow's default iso DateTime (naive isoformat with
-#     microseconds when present, no trailing 'Z') on dump, and tolerates a
-#     trailing 'Z' on load (legacy clients send "2026-07-13T18:04:00Z");
+#   - recorded_at dumps as ISO-8601 UTC with a trailing 'Z' (microseconds
+#     preserved when present) and loads an ISO-8601 string (trailing 'Z' or
+#     offset) to an aware UTC datetime — tolerating "2026-07-13T18:04:00Z";
 #   - load() returns mongoengine model INSTANCES via @post_load, not dicts, and
 #     tolerates unknown wire keys (Meta.unknown = EXCLUDE).
 def _drop_empty(data):
@@ -50,6 +49,18 @@ def _drop_empty(data):
     return {key: value for key, value in data.items() if value not in (None, {}, [])}
 
 
+class _IsoUtcDateTime(fields.Field):
+    """Dumps a datetime as ISO-8601 UTC with a 'Z' suffix (via to_iso_z), and
+    loads an ISO-8601 string (trailing 'Z' or offset) to an aware UTC datetime
+    (via parse_iso)."""
+
+    def _serialize(self, value, attr, obj, **kwargs):
+        return to_iso_z(value)
+
+    def _deserialize(self, value, attr, data, **kwargs):
+        return parse_iso(value)
+
+
 class _EmbeddedSchema(Schema):
     """Shared behavior for the Session/Field embedded schemas."""
     class Meta:
@@ -57,7 +68,7 @@ class _EmbeddedSchema(Schema):
 
     uuid = fields.String(allow_none=True, load_default=None)
     track = fields.Raw(required=False, load_default=None)
-    recorded_at = fields.DateTime(required=False)
+    recorded_at = _IsoUtcDateTime(required=False)
 
     @post_dump
     def _drop_empty(self, data, **kwargs):
@@ -109,7 +120,7 @@ class Team(db.Document):
     code = db.StringField(primary_key=True)
     name = db.StringField(null=True)
     requires_consent = db.BooleanField(default=False)  # V2 §5: minors teams gate rosters
-    created_at = db.DateTimeField(default=datetime.utcnow)
+    created_at = db.DateTimeField(default=utcnow)
     owner_device_id = db.StringField(null=True)  # lowercase device id; None = unowned
     archived = db.BooleanField(default=False)  # soft-archive (reversible)
     archived_at = db.DateTimeField(null=True)
@@ -122,7 +133,7 @@ class Player(db.Document):
     team_code = db.StringField(null=True)  # V2: now the DEFAULT team; memberships live in device_teams
     initials_only = db.BooleanField(default=False)  # V2 §5: render "B. L." everywhere
     consent_acknowledged_at = db.DateTimeField(null=True)  # V2 §5
-    updated_at = db.DateTimeField(default=datetime.utcnow)
+    updated_at = db.DateTimeField(default=utcnow)
 
 
 class CommunityField(db.Document):
@@ -150,7 +161,7 @@ class CommunityField(db.Document):
     contributing_device_ids = db.ListField(db.StringField())
     sport_id = db.StringField(null=True)  # V2 §4: None means soccer
     seeded = db.BooleanField(default=False)  # V2 §8: from satellite imagery, unconfirmed
-    created_at = db.DateTimeField(default=datetime.utcnow)
+    created_at = db.DateTimeField(default=utcnow)
     merged_into = db.StringField(null=True)  # canonical uuid when this row is an alias stub
 
 
@@ -169,7 +180,7 @@ class Match(db.Document):
     stats = db.DictField()
     team_code = db.StringField(null=True)
     sport_id = db.StringField(null=True)  # V2 §4: None means soccer
-    created_at = db.DateTimeField(default=datetime.utcnow)
+    created_at = db.DateTimeField(default=utcnow)
 
 
 # V2 documents (see docs/backend-v2-architecture.md — the binding contract)
@@ -181,7 +192,7 @@ class LiveStatus(db.Document):
     team_code = db.StringField(null=True)
     match_uuid = db.StringField(null=True)
     sequence = db.IntField(default=0)
-    updated_at = db.DateTimeField(default=datetime.utcnow)
+    updated_at = db.DateTimeField(default=utcnow)
     elapsed_s = db.FloatField(null=True)
     heart_rate = db.FloatField(null=True)
     distance_m = db.FloatField(null=True)
@@ -202,7 +213,7 @@ class MatchComment(db.Document):
     author_device = db.StringField(null=True)
     author_name = db.StringField(null=True)  # denormalized, initials-respecting at post time
     body = db.StringField(max_length=1000)
-    posted_at = db.DateTimeField(default=datetime.utcnow)
+    posted_at = db.DateTimeField(default=utcnow)
     deleted = db.BooleanField(default=False)
     author_tombstoned = db.BooleanField(default=False)
 
@@ -215,7 +226,7 @@ class DeviceTeamMembership(db.Document):
     }
     device_id = db.StringField(required=True)
     team_code = db.StringField(required=True)
-    joined_at = db.DateTimeField(default=datetime.utcnow)
+    joined_at = db.DateTimeField(default=utcnow)
 
 
 class Entitlement(db.Document):
@@ -248,5 +259,5 @@ class SeedRequest(db.Document):
     latitude = db.FloatField(required=True)
     longitude = db.FloatField(required=True)
     radius_m = db.FloatField(default=1500.0)
-    requested_at = db.DateTimeField(default=datetime.utcnow)
+    requested_at = db.DateTimeField(default=utcnow)
     status = db.StringField(default='pending')  # pending | completed | failed

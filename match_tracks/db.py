@@ -26,7 +26,8 @@ def init_app(app):
     # pymongo 4 no longer defaults uuidRepresentation, so set it explicitly to
     # keep UUID storage/round-tripping stable (matches conftest and the prior
     # pymongo 3 behavior).
-    settings = {'db': app.config['MONGODB_DB'], 'uuidRepresentation': 'standard'}
+    settings = {'db': app.config['MONGODB_DB'], 'uuidRepresentation': 'standard',
+                'tz_aware': True}
     host = app.config.get('MONGODB_HOST')
     if host:
         settings['host'] = host
