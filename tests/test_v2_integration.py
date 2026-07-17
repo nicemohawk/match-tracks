@@ -4,7 +4,7 @@ metadata (§10), seeded-field visibility (§8), membership validation on
 session ingest (§6), and consent/initials enforcement in team stats (§5).
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from tests.helpers import (make_extended_session_payload, make_field_outline,
                            make_field_payload, make_match_track, make_event,
@@ -343,7 +343,7 @@ def test_match_reads_are_scoped_to_the_device_or_admin(client, admin_headers, de
 
 
 def test_formation_excludes_unconsented_minors_and_leaks_no_device_ids(client, admin_headers, membership):
-    from datetime import datetime
+    from datetime import datetime, timezone
     from match_tracks.models import Match, Player, Team
 
     team_code = 'v2-fix-formation-team'
@@ -356,11 +356,11 @@ def test_formation_excludes_unconsented_minors_and_leaks_no_device_ids(client, a
     for index, (mean_x, mean_y) in enumerate(positions):
         device_id = f'v2-fix-formation-device-{index}'
         device_ids.append(device_id)
-        consent = datetime.utcnow() if index < 5 else None
+        consent = datetime.now(timezone.utc) if index < 5 else None
         Player(device_id=device_id, name=None, team_code=team_code,
                consent_acknowledged_at=consent).save()
         Match(uuid=new_uuid(), device_id=device_id, team_code=team_code,
-              recorded_at=datetime.utcnow(),
+              recorded_at=datetime.now(timezone.utc),
               stats={'mean_x': mean_x, 'mean_y': mean_y}).save()
 
     response = client.get(f'/teams/{team_code}/formation', headers=admin_headers)
@@ -423,7 +423,7 @@ def test_batch_auto_join_is_all_or_nothing(client, admin_headers, device_key):
 # --- Codex second-viewpoint review regressions --------------------------------
 
 def test_foreign_team_product_grants_nothing(client, admin_headers, device_key, app):
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     from match_tracks.entitlements import has_active_team_entitlement
     from match_tracks.models import Entitlement
 
@@ -433,7 +433,7 @@ def test_foreign_team_product_grants_nothing(client, admin_headers, device_key, 
     # A receipt for another app's ".team." product is rejected outright.
     app.config['ENTITLEMENT_VERIFIER'] = lambda jws: {
         'product_id': 'com.attacker.app.team.monthly',
-        'expires_at': datetime.utcnow() + timedelta(days=365),
+        'expires_at': datetime.now(timezone.utc) + timedelta(days=365),
         'environment': 'Production',
     }
     response = client.post(f'/devices/{device_uuid}/receipt',
@@ -442,7 +442,7 @@ def test_foreign_team_product_grants_nothing(client, admin_headers, device_key, 
 
     # Even a directly-inserted foreign entitlement row grants nothing.
     Entitlement(device_id=device_uuid, product_id='com.attacker.app.team.monthly',
-                expires_at=datetime.utcnow() + timedelta(days=365)).save()
+                expires_at=datetime.now(timezone.utc) + timedelta(days=365)).save()
     with app.app_context():
         assert has_active_team_entitlement(device_uuid) is False
 

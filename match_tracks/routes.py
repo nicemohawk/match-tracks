@@ -1,5 +1,5 @@
 import math
-from datetime import datetime
+from datetime import timezone
 
 from flask import jsonify, request, abort, render_template
 from marshmallow import ValidationError, EXCLUDE
@@ -12,6 +12,7 @@ from match_tracks.db import first_or_404
 from match_tracks.models import (Device, DeviceSchema, SessionSchema, FieldSchema,
                                  Match, Team, Player, CommunityField)
 from match_tracks.rate_limit import rate_limited
+from match_tracks.timeutils import parse_iso, utcnow
 
 device_schema = DeviceSchema()
 
@@ -81,7 +82,7 @@ def _upsert_player(device_id, player_name, team_code):
             player.name = player_name
         if team_code is not None:
             player.team_code = team_code
-        player.updated_at = datetime.utcnow()
+        player.updated_at = utcnow()
         try:
             player.save()
             return
@@ -114,24 +115,22 @@ def _save_match_record(match_uuid, existing_match, field_values):
 
 
 def _parse_timestamp(value):
-    """Parse an incoming ISO-8601 timestamp string into a datetime.
+    """Parse an incoming ISO-8601 timestamp string into an aware UTC datetime.
 
-    Python 3.9's ``datetime.fromisoformat`` does not accept a trailing 'Z', so
-    strip it before parsing. Returns ``None`` for empty input.
+    Tolerates a trailing 'Z' or an explicit offset; a naive input is assumed
+    UTC. Returns ``None`` for empty input.
     """
-    if not value:
-        return None
-    text = str(value).strip()
-    if text.endswith('Z'):
-        text = text[:-1]
-    return datetime.fromisoformat(text)
+    return parse_iso(value)
 
 
 def _format_timestamp(value):
-    """Serialize a datetime for NEW endpoint responses as ...Z, or ``None``."""
+    """Serialize a datetime for NEW endpoint responses as ...Z, or ``None``.
+
+    Normalizes to UTC first so a non-UTC-aware value can never mis-serialize.
+    """
     if value is None:
         return None
-    return value.strftime('%Y-%m-%dT%H:%M:%SZ')
+    return value.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
 def _track_coordinates(track):
