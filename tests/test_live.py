@@ -41,7 +41,9 @@ def test_accepted_post_is_204_and_appears_in_team_live(app, client, device_key, 
     entry = players[0]
     assert entry['x'] == 0.4
     assert entry['y'] == 0.6
-    assert entry['heart_rate'] == 150.0
+    # V3 §0: heart_rate is never returned; V3 §2 exposes an opaque member_id.
+    assert 'heart_rate' not in entry
+    assert entry['member_id'] and isinstance(entry['member_id'], str)
     assert entry['distance_m'] == 1200.0
     assert entry['on_pitch'] is True
     assert entry['stale'] is False
@@ -150,8 +152,9 @@ def test_device_cannot_post_for_a_different_device(app, client, device_key, memb
     assert response.status_code == 403
 
 
-def test_entitlement_gate_on_post_only(app, client, device_key, membership,
-                                       grant_entitlement):
+def test_live_is_free_even_with_entitlements_enforced(app, client, device_key, membership):
+    # V3 §0: a teammate's live match is visible whether or not they pay. The
+    # entitlement gate is removed from live (it stays only on §11 annotation).
     app.config['ENTITLEMENTS_ENFORCED'] = True
     team_code = 'LIVE-ENTITLE'
     device_headers = device_key('key-entitle', 'dev-entitle')
@@ -159,20 +162,10 @@ def test_entitlement_gate_on_post_only(app, client, device_key, membership,
 
     without = client.post('/devices/dev-entitle/live', headers=device_headers,
                           json=_live_body(team_code=team_code))
-    assert without.status_code == 402
-    assert without.get_json() == {'reason': 'entitlement_required'}
+    assert without.status_code == 204
 
-    # Reads never require an entitlement.
     read_without = client.get(f'/teams/{team_code}/live', headers=device_headers)
     assert read_without.status_code == 200
-
-    grant_entitlement('dev-entitle', datetime.utcnow() + timedelta(days=30))
-    with_entitlement = client.post('/devices/dev-entitle/live', headers=device_headers,
-                                   json=_live_body(team_code=team_code))
-    assert with_entitlement.status_code == 204
-
-    read_with = client.get(f'/teams/{team_code}/live', headers=device_headers)
-    assert read_with.status_code == 200
 
 
 def test_live_rate_limit_returns_429(app, client, device_key, membership):

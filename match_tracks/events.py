@@ -183,7 +183,8 @@ def get_team_events(code):
     (default 6), oldest-first. Names respect ``initials_only`` (§5); unknown
     ``kind`` strings pass through verbatim. Membership required; reads stay open
     to any member (no entitlement — a lapsed coach can still review)."""
-    member_denial = memberships.require_member(code)
+    canonical = memberships.canonical_team_code(code) or code
+    member_denial = memberships.require_member(canonical)
     if member_denial:
         return member_denial
 
@@ -194,14 +195,22 @@ def get_team_events(code):
     if since_hours <= 0:
         since_hours = DEFAULT_SINCE_HOURS
 
+    memberships.ensure_team_roles(canonical)
+    from match_tracks.models import DeviceTeamMembership
+    member_id_by_device = {
+        row.device_id: row.member_id
+        for row in DeviceTeamMembership.objects(team_code=canonical, removed_at=None)}
+
     cutoff = datetime.utcnow() - timedelta(hours=since_hours)
-    rows = MatchEvent.objects(team_code=code, date__gte=cutoff).order_by('date')
+    rows = MatchEvent.objects(team_code=canonical, date__gte=cutoff).order_by('date')
 
     events = []
     for row in rows:
         player = Player.objects(device_id=row.device_id).first() if row.device_id else None
         item = {
             'id': row.event_uuid,
+            # Opaque per-team id (V3 §2); never the device id.
+            'member_id': member_id_by_device.get(row.device_id),
             # Always a string: the client's TeamEvent.player_name is non-optional,
             # so an authorless event (no Player row) must still carry "".
             'player_name': player_display_name(player) or '',

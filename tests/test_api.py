@@ -218,25 +218,28 @@ def test_team_stats_reports_exact_per_player_aggregates(client, admin_headers, d
     assert stats_response.status_code == 200
     stats_body = stats_response.get_json()
     assert stats_body['team_code'] == 'red'
-    players_by_device_id = {player['device_id']: player for player in stats_body['players']}
+    # V3 §0: stats expose an opaque per-team member_id and role, never device_id,
+    # and avg_workrate_score is gone (the app doesn't show it).
+    players_by_name = {player['player_name']: player for player in stats_body['players']}
+    for player in stats_body['players']:
+        assert 'device_id' not in player
+        assert 'avg_workrate_score' not in player
+        assert player['member_id'] and isinstance(player['member_id'], str)
+        assert player['role'] in ('captain', 'coach', 'player')
 
-    alice_stats = players_by_device_id[device_alice_uuid]
-    assert alice_stats['player_name'] == 'Alice'
+    alice_stats = players_by_name['Alice']
     assert alice_stats['matches_played'] == 2
     assert alice_stats['total_minutes'] == 95.0
     assert alice_stats['total_distance_m'] == 17000.0
     assert alice_stats['total_sprints'] == 18
-    assert alice_stats['avg_workrate_score'] == 6.5
     assert alice_stats['goals'] == 2  # one goalFor + one goalMine
     assert alice_stats['assists'] == 1
 
-    bob_stats = players_by_device_id[device_bob_uuid]
-    assert bob_stats['player_name'] == 'Bob'
+    bob_stats = players_by_name['Bob']
     assert bob_stats['matches_played'] == 1
     assert bob_stats['total_minutes'] == 90.0
     assert bob_stats['total_distance_m'] == 10000.0
     assert bob_stats['total_sprints'] == 15
-    assert bob_stats['avg_workrate_score'] == 8.0
     assert bob_stats['goals'] == 0  # goalAgainst must not count
     assert bob_stats['assists'] == 2
 
