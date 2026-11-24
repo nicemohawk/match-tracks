@@ -61,23 +61,23 @@ def test_live_new_events_surface_in_team_timeline_oldest_first(client, device_ke
     assert 'coach_label' not in early  # no annotation yet
 
 
-def test_live_new_events_dedup_on_replay(client, device_key, membership):
-    team = 'EVT-DEDUP'
+def test_live_resend_updates_event_latest_wins(client, device_key, membership):
+    team = 'EVT-MUT'
     headers = device_key('k-evt2', 'dev-evt2')
     membership('dev-evt2', team)
 
-    event = _event('e-dup', 'goalMine', _recent(2), note='first')
-    client.post('/devices/dev-evt2/live', headers=headers,
-                json=_live_body(team, sequence=1, new_events=[event]))
-    # Re-send the SAME id in a newer, non-stale POST — must not duplicate or overwrite.
-    event_edited = _event('e-dup', 'goalMine', _recent(1), note='SECOND')
-    client.post('/devices/dev-evt2/live', headers=headers,
-                json=_live_body(team, sequence=2, new_events=[event_edited]))
+    # Streamed as goalFor; the watch then corrects it to goalMine ("who scored?")
+    # and re-sends with the SAME id + a newer sequence. Latest wins (upsert).
+    client.post('/devices/dev-evt2/live', headers=headers, json=_live_body(
+        team, sequence=1, new_events=[_event('e-mut', 'goalFor', _recent(2), note='first')]))
+    client.post('/devices/dev-evt2/live', headers=headers, json=_live_body(
+        team, sequence=2, new_events=[_event('e-mut', 'goalMine', _recent(1), note='SECOND')]))
 
-    assert MatchEvent.objects(event_uuid='e-dup').count() == 1
+    assert MatchEvent.objects(event_uuid='e-mut').count() == 1  # no duplicate
     feed = client.get(f'/teams/{team}/events', headers=headers).get_json()['events']
     assert len(feed) == 1
-    assert feed[0]['note'] == 'first'  # append-only: first-seen kept until reconcile
+    assert feed[0]['kind'] == 'goalMine'   # corrected kind wins
+    assert feed[0]['note'] == 'SECOND'
 
 
 def test_stale_live_post_does_not_append_new_events(client, device_key, membership):
@@ -160,18 +160,19 @@ def test_annotation_sets_coach_label_separate_from_note_idempotent_and_clearable
     assert event['note'] == 'player note'
 
 
-def test_annotation_unknown_event_is_404(client, device_key, membership):
+def test_annotation_resolves_by_event_id_regardless_of_match_uuid(client, device_key, membership):
     team = 'EVT-404'
     headers = device_key('k-evt7', 'dev-evt7')
     membership('dev-evt7', team)
     client.post('/devices/dev-evt7/live', headers=headers,
                 json=_live_body(team, new_events=[_event('e-known', 'flag', _recent(1))]))
 
-    # Right event id, WRONG match uuid -> 404.
-    wrong_match = client.post('/matches/other-match/events/e-known/annotation',
-                              headers=headers, json={'label': 'x'})
-    assert wrong_match.status_code == 404
-    # Unknown event id -> 404.
+    # A DIFFERENT match uuid in the path still resolves the event by its id -> 204
+    # (the live match_uuid is unreliable, so annotation keys by event id alone).
+    ok = client.post('/matches/some-other-live-uuid/events/e-known/annotation',
+                     headers=headers, json={'label': 'x'})
+    assert ok.status_code == 204
+    # A truly unknown event id -> 404.
     unknown = client.post('/matches/match-evt-1/events/does-not-exist/annotation',
                           headers=headers, json={'label': 'x'})
     assert unknown.status_code == 404
@@ -205,23 +206,22 @@ def test_annotation_requires_membership_and_entitlement(client, app, device_key,
         app.config['ENTITLEMENTS_ENFORCED'] = False
 
 
-def test_session_upload_reconciles_provisional_event_and_preserves_coach_label(
-        client, device_key, membership):
+def test_session_upload_reconciles_across_unreliable_live_match_uuid(client, device_key, membership):
     team = 'EVT-RECON'
     headers = device_key('k-evt9', 'dev-evt9')
     membership('dev-evt9', team)
 
-    # Live: provisional event with the player's original note.
+    # Live: provisional event under the per-launch live match id (NOT the session uuid).
     client.post('/devices/dev-evt9/live', headers=headers, json=_live_body(
-        team, match_uuid='m-recon',
+        team, match_uuid='live-launch-xyz',
         new_events=[_event('e-recon', 'goalMine', _recent(3), note='rough note', source='automatic')]))
-    # Coach annotates it while provisional.
-    client.post('/matches/m-recon/events/e-recon/annotation', headers=headers,
-                json={'label': 'keep me'})
+    # Coach annotates it via the live match id (the only id the client has mid-match).
+    assert client.post('/matches/live-launch-xyz/events/e-recon/annotation', headers=headers,
+                       json={'label': 'keep me'}).status_code == 204
 
-    # Upload the finished match: authoritative events[] edit the note + source.
+    # Upload the finished match under the REAL session uuid, editing note + source.
     upload = client.post('/devices/dev-evt9/sessions', headers=headers, json={'sessions': [{
-        'uuid': 'm-recon', 'recorded_at': _recent(2), 'team_code': team,
+        'uuid': 'm-real', 'recorded_at': _recent(4), 'duration_s': 600.0, 'team_code': team,
         'player_name': 'Ben L', 'track': {'coordinates': [[1, 2]]},
         'events': [_event('e-recon', 'goalMine', _recent(3), note='edited note', source='manual')],
     }]})
@@ -230,8 +230,37 @@ def test_session_upload_reconciles_provisional_event_and_preserves_coach_label(
     assert MatchEvent.objects(event_uuid='e-recon').count() == 1  # no duplicate
     row = MatchEvent.objects(event_uuid='e-recon').first()
     assert row.provisional is False                 # reconciled
+    assert row.match_uuid == 'm-real'               # now the real session uuid
     event = client.get(f'/teams/{team}/events', headers=headers).get_json()['events'][0]
     assert event['note'] == 'edited note'           # uploaded copy wins
     assert event['source'] == 'manual'
-    assert event['coach_label'] == 'keep me'        # coach annotation preserved
+    assert event['coach_label'] == 'keep me'        # survived reconciliation across the uuid change
     assert event['player_name'] == 'Ben L'
+
+
+def test_session_upload_drops_undone_live_only_events(client, device_key, membership):
+    team = 'EVT-UNDO'
+    headers = device_key('k-evt10', 'dev-evt10')
+    membership('dev-evt10', team)
+
+    # Three live events: two in this match's window, one from much earlier (another match).
+    client.post('/devices/dev-evt10/live', headers=headers, json=_live_body(
+        team, match_uuid='live-launch-2', new_events=[
+            _event('e-keep', 'goalMine', _recent(5)),
+            _event('e-undone', 'flag', _recent(4)),
+            _event('e-other', 'flag', _iso_z(datetime.utcnow() - timedelta(minutes=120))),
+        ]))
+
+    # The player undid e-undone; the authoritative upload omits it.
+    upload = client.post('/devices/dev-evt10/sessions', headers=headers, json={'sessions': [{
+        'uuid': 'm-undo', 'recorded_at': _recent(6), 'duration_s': 600.0, 'team_code': team,
+        'track': {'coordinates': [[1, 2]]},
+        'events': [_event('e-keep', 'goalMine', _recent(5))],
+    }]})
+    assert upload.status_code == 200
+
+    ids = {e['id'] for e in client.get(f'/teams/{team}/events', headers=headers).get_json()['events']}
+    assert 'e-keep' in ids                              # kept + reconciled
+    assert 'e-undone' not in ids                        # dropped — undone, absent from upload
+    assert MatchEvent.objects(event_uuid='e-undone').first() is None
+    assert 'e-other' in ids                             # outside the window, untouched

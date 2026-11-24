@@ -411,9 +411,14 @@ def _upsert_match_from_session(device_id, session_dict):
     ))
 
     # §11: reconcile this match's events into the team timeline — the uploaded
-    # copy is authoritative over any provisional live-log copy (coach_label kept).
+    # copy is authoritative (coach_label kept), and provisional live events the
+    # player undid (absent here) are dropped by device + time window, since the
+    # live match_uuid is an unreliable per-launch id.
     from match_tracks.events import reconcile_session_events
-    reconcile_session_events(match_uuid, team_code, device_id, events)
+    reconcile_session_events(
+        match_uuid, team_code, device_id, events,
+        recorded_at=_parse_timestamp(session_dict.get('recorded_at')),
+        duration_s=session_dict.get('duration_s'))
 
 
 # READ device fields (legacy, unauthenticated)

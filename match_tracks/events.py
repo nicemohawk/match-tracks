@@ -31,6 +31,9 @@ events_blueprint = Blueprint('events', __name__)
 
 TIMESTAMP_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 DEFAULT_SINCE_HOURS = 6
+# Clock-skew margin when scoping which provisional live events a match upload
+# supersedes (device + time; the live match_uuid is unreliable — see §11 notes).
+RECONCILE_WINDOW_MARGIN = timedelta(minutes=5)
 
 
 def _parse_timestamp(value):
@@ -59,57 +62,116 @@ def _event_id(event):
     return str(raw).strip().lower() if raw else None
 
 
-def ingest_live_events(team_code, match_uuid, device_id, new_events):
-    """Append live-tagged events to the team log (provisional), deduped by id.
+def _apply_live_fields(row, event):
+    row.kind = event.get('kind')
+    row.date = _parse_timestamp(event.get('date'))
+    row.note = event.get('note')
+    row.source = event.get('source')
 
-    A re-sent id is a no-op (never a duplicate, never an overwrite): a
-    provisional event is kept as first seen until the authoritative upload
-    reconciles it. Called only after the live POST's sequence guard passes.
+
+def ingest_live_events(team_code, match_uuid, device_id, new_events):
+    """Upsert live-tagged events into the team log (provisional), latest-wins.
+
+    The watch may re-send an event with the SAME id and a corrected kind/note
+    (e.g. goalFor -> goalMine after "who scored?"), so a re-send UPDATES the
+    provisional row rather than being ignored. ``coach_label`` is never touched.
+    An event already reconciled from an authoritative upload (provisional=False)
+    is left alone — the upload wins. Called only after the live POST's sequence
+    guard passes.
     """
     for event in new_events or []:
         event_id = _event_id(event)
         if not event_id:
             continue
-        if MatchEvent.objects(event_uuid=event_id).first() is not None:
-            continue
+        row = MatchEvent.objects(event_uuid=event_id).first()
+        if row is not None and not row.provisional:
+            continue  # authoritative upload already won
+        if row is None:
+            row = MatchEvent(event_uuid=event_id)
+        row.match_uuid = match_uuid
+        row.team_code = team_code
+        row.device_id = device_id
+        _apply_live_fields(row, event)
+        row.provisional = True
         try:
-            MatchEvent(
-                event_uuid=event_id,
-                match_uuid=match_uuid,
-                team_code=team_code,
-                device_id=device_id,
-                kind=event.get('kind'),
-                date=_parse_timestamp(event.get('date')),
-                note=event.get('note'),
-                source=event.get('source'),
-                provisional=True,
-            ).save(force_insert=True)
+            row.save()
         except NotUniqueError:
-            continue  # a concurrent live POST inserted the same id first — fine
+            # Concurrent insert of the same id won the race — reload and update
+            # (latest wins) unless it has since been reconciled.
+            row = MatchEvent.objects(event_uuid=event_id).first()
+            if row is not None and row.provisional:
+                _apply_live_fields(row, event)
+                row.save()
 
 
-def reconcile_session_events(match_uuid, team_code, device_id, events):
-    """Reconcile uploaded session events into the timeline (authoritative).
+def _match_window(recorded_at, duration_s, uploaded_dates):
+    """Time span of the uploaded match, widened by a clock-skew margin, or None.
 
-    The uploaded copy replaces the provisional live-log copy of the same id
-    (edited notes / manual overrides win) while preserving any coach_label the
-    coach already set. Idempotent on re-upload.
+    Prefers [recorded_at, recorded_at + duration_s]; folds in the span of the
+    uploaded events' own dates so late/early events are still covered.
     """
+    start = recorded_at
+    end = None
+    if recorded_at is not None and duration_s is not None:
+        try:
+            end = recorded_at + timedelta(seconds=float(duration_s))
+        except (TypeError, ValueError):
+            end = None
+    if uploaded_dates:
+        earliest, latest = min(uploaded_dates), max(uploaded_dates)
+        start = min(start, earliest) if start is not None else earliest
+        end = max(end, latest) if end is not None else latest
+    if start is None and end is None:
+        return None
+    start = start if start is not None else end
+    end = end if end is not None else start
+    return (start - RECONCILE_WINDOW_MARGIN, end + RECONCILE_WINDOW_MARGIN)
+
+
+def reconcile_session_events(match_uuid, team_code, device_id, events,
+                             recorded_at=None, duration_s=None):
+    """Reconcile an uploaded match's events into the timeline (authoritative).
+
+    The uploaded ``events[]`` are the source of truth: each is upserted
+    (provisional=False), keyed by event id, preserving any ``coach_label``.
+    Because the watch has no wire delete, an event the player UNDID simply never
+    arrives in the upload — so provisional live-log events from the same device
+    within this match's time window that are absent from the upload are dropped.
+
+    Scope is device + time, NEVER the live ``match_uuid`` (an unreliable
+    per-launch id, shared across matches in one app launch). Idempotent on
+    re-upload: reconciled rows (provisional=False) are never dropped.
+    """
+    uploaded_ids = set()
+    uploaded_dates = []
     for event in events or []:
         event_id = _event_id(event)
         if not event_id:
             continue
+        uploaded_ids.add(event_id)
+        date = _parse_timestamp(event.get('date'))
+        if date is not None:
+            uploaded_dates.append(date)
         row = MatchEvent.objects(event_uuid=event_id).first() or MatchEvent(event_uuid=event_id)
         row.match_uuid = match_uuid
         row.team_code = team_code
         row.device_id = device_id
         row.kind = event.get('kind')
-        row.date = _parse_timestamp(event.get('date'))
+        row.date = date
         row.note = event.get('note')
         row.source = event.get('source')
         row.provisional = False
         # coach_label is intentionally left untouched — preserved across reconcile.
         row.save()
+
+    window = _match_window(recorded_at, duration_s, uploaded_dates)
+    if window is None or not device_id:
+        return
+    start, end = window
+    for row in MatchEvent.objects(device_id=device_id, provisional=True,
+                                  date__gte=start, date__lte=end):
+        if row.event_uuid not in uploaded_ids:
+            row.delete()  # undone on the watch — never made it into the upload
 
 
 # GET the unified team event timeline
@@ -166,8 +228,12 @@ def annotate_event(match_uuid, event_id):
     """Set an event's ``coach_label`` (separate from the player's note).
     Idempotent overwrite; an empty/absent label clears it. Requires team
     membership AND an active team entitlement (a coach write)."""
+    # Resolve by event id alone. The path match_uuid may be the client's
+    # unreliable per-launch live id (never the session uuid), so a coach_label
+    # written against it must still land — and survive reconciliation, which
+    # also keys by event id. Event ids are globally unique uuids.
     row = MatchEvent.objects(event_uuid=str(event_id).strip().lower()).first()
-    if row is None or row.match_uuid != str(match_uuid).strip().lower():
+    if row is None:
         return jsonify({'reason': 'unknown_event'}), 404
 
     member_denial = memberships.require_member(row.team_code)
