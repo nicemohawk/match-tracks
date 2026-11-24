@@ -54,6 +54,11 @@ New endpoints:
   sprints, workrate, goals, assists); optional `since`, `limit`, `offset`
 - `GET /fields/nearby?lat=..&lon=..&radius_m=..&min_confidence=..` — community fields
   near a location, sorted by distance
+- `GET /teams/<code>/events?since_hours=N` — unified team event timeline (§11): every
+  member's tagged match events (live-relayed + reconciled from upload, deduped by event
+  id), oldest-first, names initials_only-respecting; membership required
+- `POST /matches/<match_uuid>/events/<event_id>/annotation` — set an event's coach
+  `label` (kept separate from the player's note); membership + active team entitlement
 
 ### Community field database
 

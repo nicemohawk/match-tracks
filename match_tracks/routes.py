@@ -397,17 +397,23 @@ def _upsert_match_from_session(device_id, session_dict):
 
     from match_tracks.sports_config import normalized_sport_id
 
+    events = session_dict.get('events') or []
     _save_match_record(match_uuid, existing_match, dict(
         device_id=device_id,
         field_uuid=field_uuid_value,
         recorded_at=_parse_timestamp(session_dict.get('recorded_at')),
         duration_s=session_dict.get('duration_s'),
         track=track,
-        events=session_dict.get('events') or [],
+        events=events,
         stats=session_dict.get('stats') or {},
         team_code=team_code,
         sport_id=normalized_sport_id(sport_id),
     ))
+
+    # §11: reconcile this match's events into the team timeline — the uploaded
+    # copy is authoritative over any provisional live-log copy (coach_label kept).
+    from match_tracks.events import reconcile_session_events
+    reconcile_session_events(match_uuid, team_code, device_id, events)
 
 
 # READ device fields (legacy, unauthenticated)
