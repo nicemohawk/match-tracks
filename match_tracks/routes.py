@@ -7,7 +7,7 @@ from mongoengine.connection import get_connection
 
 from match_tracks import app
 from match_tracks import field_service, geometry
-from match_tracks.auth import auth, current_principal, principal_may_read_team
+from match_tracks.auth import auth, current_principal
 from match_tracks.db import first_or_404
 from match_tracks.models import (Device, DeviceSchema, SessionSchema, FieldSchema,
                                  Match, Team, Player, CommunityField)
@@ -571,28 +571,46 @@ def get_device_match(identifier, match_uuid):
 @auth.login_required
 @rate_limited('read')
 def get_team_stats(code):
-    team = Team.objects(code=code).first()
+    from match_tracks import memberships
+    from match_tracks.models import DeviceTeamMembership
+
+    canonical = memberships.canonical_team_code(code) or code
+    team = Team.objects(code=canonical).first()
     if team is None:
         abort(404)
 
-    if not principal_may_read_team(current_principal(), code):
-        abort(403)
+    # V3 §3: a removed member gets {"reason":"removed"}; non-members not_a_member.
+    member_denial = memberships.require_member(canonical)
+    if member_denial:
+        return member_denial
+
+    # V3 §0/§1/§3: expose only an opaque per-team member_id and role — never a
+    # device id — and leave removed members' matches out of the team's totals.
+    memberships.ensure_team_roles(canonical)
+    member_id_by_device = {}
+    role_by_device = {}
+    for row in DeviceTeamMembership.objects(team_code=canonical, removed_at=None):
+        member_id_by_device[row.device_id] = row.member_id
+        role_by_device[row.device_id] = row.role
+    removed_devices = {
+        row.device_id
+        for row in DeviceTeamMembership.objects(team_code=canonical, removed_at__ne=None)}
 
     since = _parse_timestamp(request.args.get('since'))
 
-    matches = Match.objects(team_code=code)
+    matches = Match.objects(team_code=canonical)
     if since is not None:
         matches = matches.filter(recorded_at__gte=since)
 
     aggregates_by_device = {}
     for match in matches:
+        if match.device_id in removed_devices:
+            continue  # removed member's past matches leave the team's totals
         device_aggregate = aggregates_by_device.setdefault(match.device_id, {
-            'device_id': match.device_id,
             'matches_played': 0,
             'total_minutes': 0.0,
             'total_distance_m': 0.0,
             'total_sprints': 0,
-            'workrate_scores': [],
             'goals': 0,
             'assists': 0,
         })
@@ -602,10 +620,6 @@ def get_team_stats(code):
         device_aggregate['total_minutes'] += (stats.get('time_on_pitch_s') or 0.0) / 60.0
         device_aggregate['total_distance_m'] += stats.get('total_distance_m') or 0.0
         device_aggregate['total_sprints'] += stats.get('sprint_count') or 0
-
-        workrate_score = stats.get('workrate_score')
-        if workrate_score is not None:
-            device_aggregate['workrate_scores'].append(workrate_score)
 
         for event in match.events or []:
             kind = event.get('kind')
@@ -623,11 +637,10 @@ def get_team_stats(code):
         # has acknowledged consent.
         if consent_blocked(player, team):
             continue
-        workrate_scores = device_aggregate.pop('workrate_scores')
-        avg_workrate_score = (sum(workrate_scores) / len(workrate_scores)
-                              if workrate_scores else None)
-        device_aggregate['player_name'] = player_display_name(player)
-        device_aggregate['avg_workrate_score'] = avg_workrate_score
+        # V3 §0: member_id (opaque) replaces device_id; player_name never null.
+        device_aggregate['member_id'] = member_id_by_device.get(device_id)
+        device_aggregate['role'] = role_by_device.get(device_id)
+        device_aggregate['player_name'] = player_display_name(player) or 'No name'
         players.append(device_aggregate)
 
     offset = request.args.get('offset', default=0, type=int)
@@ -640,7 +653,7 @@ def get_team_stats(code):
         players = players[offset:]
 
     return jsonify({
-        'team_code': code,
+        'team_code': canonical,
         'team_name': team.name,
         'players': players,
     })

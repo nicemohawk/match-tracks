@@ -25,8 +25,9 @@ def _own_team(client, device_key, membership, code, name='Owners FC',
     return headers
 
 
-# 1. Device creates a team → owner set; is_owner true for owner, false for member.
-def test_create_sets_owner_and_get_reports_is_owner(client, device_key, membership):
+# 1. Device creates a team → owner set (model); V3 §2 GET returns the members
+#    view (owner id never exposed).
+def test_create_sets_owner_and_get_returns_members(client, device_key, membership):
     code = 'tadmin-owned-1'
     owner_headers = _own_team(client, device_key, membership, code)
 
@@ -36,14 +37,17 @@ def test_create_sets_owner_and_get_reports_is_owner(client, device_key, membersh
 
     owner_view = client.get(f'/teams/{code}', headers=owner_headers)
     assert owner_view.status_code == 200
-    assert owner_view.get_json()['team']['is_owner'] is True
-    assert 'owner_device_id' not in owner_view.get_json()['team']  # never exposed
+    body = owner_view.get_json()
+    assert 'team' not in body  # V3 §2: flat shape, not wrapped
+    assert body['code'] == code
+    assert body['my_member_id'] is not None
+    assert 'owner_device_id' not in body  # never exposed
 
     member_headers = device_key('tadmin-m1-key', 'tadmin-m1')
     membership('tadmin-m1', code)
     member_view = client.get(f'/teams/{code}', headers=member_headers)
     assert member_view.status_code == 200
-    assert member_view.get_json()['team']['is_owner'] is False
+    assert len(member_view.get_json()['members']) == 2
 
 
 # 2. Non-owner PATCH → 403; owner PATCH renames → 200 and GET reflects it.
@@ -64,7 +68,7 @@ def test_patch_owner_only_and_renames(client, device_key, membership):
     assert renamed.get_json()['team']['name'] == 'Renamed FC'
 
     reread = client.get(f'/teams/{code}', headers=owner_headers)
-    assert reread.get_json()['team']['name'] == 'Renamed FC'
+    assert reread.get_json()['name'] == 'Renamed FC'  # V3 §2 flat shape
 
 
 # 3. Owner DELETE archives; GET shows archived; stats still return; join → 409.
@@ -81,8 +85,10 @@ def test_delete_archives_but_preserves_stats_and_blocks_join(client, admin_heade
     assert team.archived is True
     assert team.archived_at is not None
 
+    # Archived flag lives on the model now (not the V3 §2 members view); GET
+    # still serves an archived team to its members.
     view = client.get(f'/teams/{code}', headers=owner_headers)
-    assert view.get_json()['team']['archived'] is True
+    assert view.status_code == 200
 
     # Stats endpoint still serves an archived team (upload/read never blocked).
     stats = client.get(f'/teams/{code}/stats', headers=admin_headers)
@@ -176,8 +182,10 @@ def test_admin_manages_any_team(client, admin_headers, device_key, membership):
     assert Team.objects(code=code).first().archived is True
 
 
-# 8. GET: 404 unknown, 403 non-member, 200 member with member_count (2 devices).
-def test_get_visibility_and_member_count(client, admin_headers, device_key):
+# 8. GET: 404 unknown, 403 non-member, 200 member returns the members list
+#    (V3 §2 is device_teams-based; legacy default-team players appear once the
+#    migration backfills device_teams rows for them).
+def test_get_visibility_and_members(client, admin_headers, device_key):
     unknown = client.get('/teams/tadmin-nonexistent', headers=admin_headers)
     assert unknown.status_code == 404
     assert unknown.get_json() == {'reason': 'unknown_team'}
@@ -195,7 +203,8 @@ def test_get_visibility_and_member_count(client, admin_headers, device_key):
     member_headers = device_key('tadmin-count-a-key', 'tadmin-count-a')
     view = client.get(f'/teams/{code}', headers=member_headers)
     assert view.status_code == 200
-    assert view.get_json()['team']['member_count'] == 2
+    member_ids = [member['member_id'] for member in view.get_json()['members']]
+    assert len(member_ids) == 1 and all(member_ids)  # the device_teams member
 
 
 # 9. Auto-create intact: a session tagging a new team still 200, unowned/unarchived.

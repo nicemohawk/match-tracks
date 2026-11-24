@@ -12,9 +12,9 @@ from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, request
 
-from match_tracks import entitlements, memberships
+from match_tracks import memberships
 from match_tracks.auth import auth
-from match_tracks.models import LiveStatus, Player, Team
+from match_tracks.models import DeviceTeamMembership, LiveStatus, Player, Team
 from match_tracks.privacy import consent_blocked, player_display_name
 from match_tracks.rate_limit import rate_limited
 
@@ -59,17 +59,16 @@ def post_live_status(device_id):
     one is ignored (200 ``{"stale": true}``); anything else overwrites the
     device's entire row (204). A new match_uuid is always accepted regardless
     of the previously stored sequence.
+
+    V3 §0: live is free — no team entitlement is required to post or read it.
     """
     denial = memberships.actor_denial(device_id)
     if denial:
         return denial
 
-    entitlement_denial = entitlements.require_team_entitlement()
-    if entitlement_denial:
-        return entitlement_denial
-
     json_data = request.get_json(silent=True) or {}
-    team_code = json_data.get('team_code')
+    team_code = memberships.canonical_team_code(json_data.get('team_code')) \
+        or json_data.get('team_code')
 
     member_denial = memberships.require_member(team_code)
     if member_denial:
@@ -100,7 +99,8 @@ def post_live_status(device_id):
     live_status.sequence = incoming_sequence
     live_status.updated_at = updated_at
     live_status.elapsed_s = json_data.get('elapsed_s')
-    live_status.heart_rate = json_data.get('heart_rate')
+    # V3 §0: heart_rate is dropped on ingest and never returned. Older builds
+    # may still send it; it is ignored.
     live_status.distance_m = json_data.get('distance_m')
     live_status.current_speed = json_data.get('current_speed')
     live_status.on_pitch = bool(json_data.get('on_pitch', True))
@@ -130,27 +130,41 @@ def get_team_live(code):
     consented) are excluded. Each entry is flagged ``stale`` when its snapshot
     is older than 30 seconds.
     """
-    member_denial = memberships.require_member(code)
+    canonical = memberships.canonical_team_code(code) or code
+    member_denial = memberships.require_member(canonical)
     if member_denial:
         return member_denial
 
-    team = Team.objects(code=code).first()
+    team = Team.objects(code=canonical).first()
+    memberships.ensure_team_roles(canonical)
+    member_ids = {
+        row.device_id: row.member_id
+        for row in DeviceTeamMembership.objects(team_code=canonical, removed_at=None)}
+    removed_devices = {
+        row.device_id
+        for row in DeviceTeamMembership.objects(team_code=canonical, removed_at__ne=None)}
+
     now = datetime.utcnow()
     stale_cutoff = now - timedelta(seconds=STALE_AFTER_SECONDS)
+    # V3 §7: requires_consent teams never leak positions.
+    omit_coordinates = bool(team is not None and team.requires_consent)
 
     players = []
-    for live_status in LiveStatus.objects(team_code=code):
+    for live_status in LiveStatus.objects(team_code=canonical):
+        if live_status.device_id in removed_devices:
+            continue  # a removed member's live data leaves the team view
         player = Player.objects(device_id=live_status.device_id).first()
         if consent_blocked(player, team):
             continue
 
         updated_at = live_status.updated_at
+        # No device id, heart rate, route or effort ever leaves here (V3 §7).
         players.append({
-            'player_name': player_display_name(player),
+            'member_id': member_ids.get(live_status.device_id),
+            'player_name': player_display_name(player) or 'No name',
             'updated_at': _format_timestamp(updated_at),
-            'x': live_status.x,
-            'y': live_status.y,
-            'heart_rate': live_status.heart_rate,
+            'x': None if omit_coordinates else live_status.x,
+            'y': None if omit_coordinates else live_status.y,
             'distance_m': live_status.distance_m,
             'on_pitch': bool(live_status.on_pitch),
             'stale': updated_at is None or updated_at < stale_cutoff,

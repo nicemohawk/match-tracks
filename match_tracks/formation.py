@@ -353,9 +353,11 @@ def _is_number(value):
 @auth.login_required
 @rate_limited('read')
 def get_formation(code):
+    code = memberships.canonical_team_code(code) or code
     denial = memberships.require_member(code)
     if denial:
         return denial
+    memberships.ensure_team_roles(code)
 
     try:
         window_days = int(request.args.get('window_days', DEFAULT_WINDOW_DAYS))
@@ -401,6 +403,11 @@ def get_formation(code):
 
     confidence = round(max(0.0, 1.0 - best_mean_cost / CONFIDENCE_COST_SCALE), 2)
 
+    from match_tracks.models import DeviceTeamMembership
+    member_id_by_device = {
+        row.device_id: row.member_id
+        for row in DeviceTeamMembership.objects(team_code=code, removed_at=None)}
+
     slots = []
     for player_index, device_id in enumerate(ordered_device_ids):
         player = Player.objects(device_id=device_id).first()
@@ -410,6 +417,7 @@ def get_formation(code):
         aligned_x, aligned_y = best_aligned_points[player_index]
         assigned_slot = best_template[best_assignment[player_index]]
         slots.append({
+            'member_id': member_id_by_device.get(device_id),  # V3 §2, opaque
             'player_name': player_name,
             'x': round(aligned_x, 3),
             'y': round(aligned_y, 3),

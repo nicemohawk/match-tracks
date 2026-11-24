@@ -52,6 +52,11 @@ def app():
         reset_rate_limiter()
     except ImportError:
         pass
+    try:
+        from match_tracks.join_rate import reset_join_rate_limiter
+        reset_join_rate_limiter()
+    except ImportError:
+        pass
 
 
 @pytest.fixture()

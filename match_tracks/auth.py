@@ -16,9 +16,11 @@ different team, are denied. This keeps a device from reading another team's
 match data just because it knows (or guesses) that team's code.
 """
 
+import hashlib
+import hmac
 import os
 
-from flask import current_app, request
+from flask import current_app, jsonify, request
 from flask_httpauth import HTTPTokenAuth
 
 # Legacy hardcoded key, kept for backward compatibility with existing
@@ -108,6 +110,36 @@ def effective_device_id():
     if normalized_header and normalized_header != key_device_id:
         return None
     return key_device_id
+
+
+def hash_device_secret(secret):
+    """SHA-256 hex of a device secret (V3 §1). The plaintext is never stored."""
+    return hashlib.sha256(str(secret).encode('utf-8')).hexdigest()
+
+
+def require_device_secret(device_id):
+    """None when the caller may perform a §2–§6 write as `device_id`; else a
+    ``(response, status)`` tuple.
+
+    A device id alone is not a credential (V3 §0/§1): a device principal must
+    present the matching ``X-Device-Secret``. Admin keys (operators, tests)
+    bypass, consistent with every other gate in this codebase.
+    """
+    from match_tracks.models import DeviceSecret
+
+    principal = current_principal()
+    if principal and principal.get('admin'):
+        return None
+
+    presented = request.headers.get('X-Device-Secret')
+    if not presented:
+        return jsonify({'reason': 'device_secret_required'}), 401
+
+    record = DeviceSecret.objects(device_id=str(device_id).lower()).first()
+    if record is None or not hmac.compare_digest(
+            record.secret_hash, hash_device_secret(presented)):
+        return jsonify({'reason': 'device_secret_invalid'}), 403
+    return None
 
 
 def principal_may_read_team(principal, team_code):

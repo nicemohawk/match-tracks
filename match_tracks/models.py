@@ -105,14 +105,21 @@ class DeviceSchema(Schema):
 # and merges observations of the same physical pitch into a single canonical
 # CommunityField row. All uuid values are stored as lowercase strings.
 class Team(db.Document):
-    meta = {'collection': 'teams', 'indexes': ['owner_device_id']}
-    code = db.StringField(primary_key=True)
+    meta = {'collection': 'teams',
+            'indexes': ['owner_device_id', 'current_code', 'previous_code']}
+    code = db.StringField(primary_key=True)  # immutable internal key (never rotated)
     name = db.StringField(null=True)
     requires_consent = db.BooleanField(default=False)  # V2 §5: minors teams gate rosters
     created_at = db.DateTimeField(default=datetime.utcnow)
     owner_device_id = db.StringField(null=True)  # lowercase device id; None = unowned
     archived = db.BooleanField(default=False)  # soft-archive (reversible)
     archived_at = db.DateTimeField(null=True)
+    # V3 §3: rotatable join code. current_code is the advertised code (defaults
+    # to `code`); previous_code keeps the prior code resolving for a 30-day grace
+    # after a rotation. Everything else keys off the immutable `code`.
+    current_code = db.StringField(null=True)
+    previous_code = db.StringField(null=True)
+    previous_code_access_until = db.DateTimeField(null=True)
 
 
 class Player(db.Document):
@@ -233,14 +240,25 @@ class MatchComment(db.Document):
 
 
 class DeviceTeamMembership(db.Document):
-    """A device may belong to many teams; players.team_code stays the default."""
+    """A device may belong to many teams; players.team_code stays the default.
+
+    V3 §1: ``member_id`` is the opaque per-team identity exposed to teammates
+    (no device id ever leaves the server about another player); ``role`` is the
+    captain/coach/player grade; ``removed_at`` soft-removes a member (the device
+    is denied team access until the captain restores it).
+    """
     meta = {
         'collection': 'device_teams',
-        'indexes': [{'fields': ['device_id', 'team_code'], 'unique': True}, 'team_code'],
+        'indexes': [{'fields': ['device_id', 'team_code'], 'unique': True},
+                    'team_code',
+                    {'fields': ['member_id'], 'unique': True, 'sparse': True}],
     }
     device_id = db.StringField(required=True)
     team_code = db.StringField(required=True)
     joined_at = db.DateTimeField(default=datetime.utcnow)
+    member_id = db.StringField(null=True)  # opaque per-team uuid (backfilled random)
+    role = db.StringField(default='player')  # captain | coach | player
+    removed_at = db.DateTimeField(null=True)
 
 
 class Entitlement(db.Document):
@@ -275,3 +293,78 @@ class SeedRequest(db.Document):
     radius_m = db.FloatField(default=1500.0)
     requested_at = db.DateTimeField(default=datetime.utcnow)
     status = db.StringField(default='pending')  # pending | completed | failed
+
+
+# V3 documents (see docs/BACKEND_UPGRADE_PROMPT_V3.md — the binding contract)
+
+class DeviceSecret(db.Document):
+    """Per-device secret (V3 §1): a device id alone is not a credential.
+
+    Issued once; only the SHA-256 hash of the token is stored. The app keeps the
+    plaintext in the Keychain and presents it as ``X-Device-Secret`` on §2–§6
+    writes.
+    """
+    meta = {'collection': 'device_secrets'}
+    device_id = db.StringField(primary_key=True)
+    secret_hash = db.StringField(required=True)
+    created_at = db.DateTimeField(default=datetime.utcnow)
+
+
+class TeamLineup(db.Document):
+    """The captain/coach-set starting formation for a team (V3 §4).
+
+    Distinct from ``/formation`` (which is inferred from match tracks). ``slots``
+    is a list of ``{member_id, name, x, y}`` dicts; a ``name`` slot references a
+    person not on MatchTracker and is never stored or returned anywhere else.
+    """
+    meta = {'collection': 'team_lineups'}
+    team_code = db.StringField(primary_key=True)
+    name = db.StringField(null=True)
+    slots = db.ListField(db.DictField())
+    updated_by_device = db.StringField(null=True)
+    updated_at = db.DateTimeField(default=datetime.utcnow)
+
+
+class TeamNext(db.Document):
+    """The team's next scheduled match (V3 §4). Cleared 12 h after kickoff."""
+    meta = {'collection': 'team_next'}
+    team_code = db.StringField(primary_key=True)
+    kickoff = db.DateTimeField(null=True)
+    title = db.StringField(null=True)
+    place = db.StringField(null=True)  # free text; no coordinates
+    entries = db.ListField(db.DictField())  # [{member_id} | {name}]
+    updated_at = db.DateTimeField(default=datetime.utcnow)
+
+
+class JoinRequest(db.Document):
+    """A pending join to a ``requires_consent`` team (V3 §7).
+
+    Holds the member_id that becomes the membership's id once the captain
+    accepts, so a leaked code is not enough to watch children play.
+    """
+    meta = {'collection': 'join_requests',
+            'indexes': ['team_code', 'device_id',
+                        {'fields': ['member_id'], 'unique': True}]}
+    member_id = db.StringField(primary_key=True)
+    team_code = db.StringField(required=True)
+    device_id = db.StringField(required=True)
+    requested_at = db.DateTimeField(default=datetime.utcnow)
+
+
+class AuditLog(db.Document):
+    """Role changes and member removals (V3 §3/§7): who, whom, action, when.
+
+    A TTL index expires rows 90 days after ``created_at`` (server-enforced; a
+    no-op under mongomock, which is fine for tests).
+    """
+    meta = {'collection': 'audit_log',
+            'indexes': [
+                'team_code',
+                {'fields': ['created_at'], 'expireAfterSeconds': 60 * 60 * 24 * 90},
+            ]}
+    team_code = db.StringField(required=True)
+    action = db.StringField(required=True)  # e.g. 'remove', 'restore', 'role', 'handover'
+    actor_device = db.StringField(null=True)      # who did it
+    subject_member_id = db.StringField(null=True)  # whom it was done to
+    detail = db.StringField(null=True)
+    created_at = db.DateTimeField(default=datetime.utcnow)

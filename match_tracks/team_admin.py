@@ -42,17 +42,9 @@ def _team_detail_json(team):
     }
 
 
-# READ a team (any member; admin bypass)
-@team_admin_blueprint.route('/teams/<code>', methods=['GET'])
-@auth.login_required
-def get_team(code):
-    team = Team.objects(code=code).first()
-    if team is None:
-        return jsonify({'reason': 'unknown_team'}), 404
-    denial = require_member(code)
-    if denial:
-        return denial
-    return jsonify({'team': _team_detail_json(team)})
+# READ a team: V3 §2 replaces this with the members-list view in
+# match_tracks/teams.py (GET /teams/<code>). The V2 owner/member_count shape is
+# gone; PATCH/DELETE/claim below keep the V2 owner semantics.
 
 
 # RENAME / toggle consent / (un)archive a team (owner or admin)
