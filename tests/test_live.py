@@ -1,6 +1,6 @@
 """Acceptance tests for V2 §1 live telemetry (match_tracks/live.py)."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from match_tracks.models import LiveStatus, Player, Team
 
@@ -93,11 +93,11 @@ def test_different_match_uuid_with_lower_sequence_overwrites(app, client, device
 
 def test_stale_flag_reflects_snapshot_age(app, client, admin_headers):
     team_code = 'LIVE-STALE'
-    old_when = datetime.utcnow() - timedelta(seconds=31)
+    old_when = datetime.now(timezone.utc) - timedelta(seconds=31)
     LiveStatus(device_id='dev-old', team_code=team_code, match_uuid='m-old',
                sequence=1, updated_at=old_when, x=0.1, y=0.2).save()
     LiveStatus(device_id='dev-fresh', team_code=team_code, match_uuid='m-fresh',
-               sequence=1, updated_at=datetime.utcnow(), x=0.3, y=0.4).save()
+               sequence=1, updated_at=datetime.now(timezone.utc), x=0.3, y=0.4).save()
 
     listing = client.get(f'/teams/{team_code}/live', headers=admin_headers)
     assert listing.status_code == 200
@@ -111,7 +111,7 @@ def test_initials_only_player_name_is_rendered(app, client, admin_headers):
     Player(device_id='dev-initials', name='Ben Lachman', initials_only=True,
            team_code=team_code).save()
     LiveStatus(device_id='dev-initials', team_code=team_code, match_uuid='m1',
-               sequence=1, updated_at=datetime.utcnow()).save()
+               sequence=1, updated_at=datetime.now(timezone.utc)).save()
 
     listing = client.get(f'/teams/{team_code}/live', headers=admin_headers)
     players = listing.get_json()['players']
@@ -124,7 +124,7 @@ def test_consent_gated_player_is_excluded(app, client, admin_headers):
     Team(code=team_code, requires_consent=True).save()
     Player(device_id='dev-noconsent', name='Kid Player', team_code=team_code).save()
     LiveStatus(device_id='dev-noconsent', team_code=team_code, match_uuid='m1',
-               sequence=1, updated_at=datetime.utcnow()).save()
+               sequence=1, updated_at=datetime.now(timezone.utc)).save()
 
     listing = client.get(f'/teams/{team_code}/live', headers=admin_headers)
     assert listing.status_code == 200
@@ -166,7 +166,7 @@ def test_entitlement_gate_on_post_only(app, client, device_key, membership,
     read_without = client.get(f'/teams/{team_code}/live', headers=device_headers)
     assert read_without.status_code == 200
 
-    grant_entitlement('dev-entitle', datetime.utcnow() + timedelta(days=30))
+    grant_entitlement('dev-entitle', datetime.now(timezone.utc) + timedelta(days=30))
     with_entitlement = client.post('/devices/dev-entitle/live', headers=device_headers,
                                    json=_live_body(team_code=team_code))
     assert with_entitlement.status_code == 204

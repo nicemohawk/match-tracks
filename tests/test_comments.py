@@ -1,13 +1,13 @@
 """Acceptance tests for V2 §2 match comments (match_tracks/comments.py)."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from match_tracks.models import Match, MatchComment, Player
 
 
 def _make_match(uuid, team_code=None):
     Match(uuid=uuid.lower(), device_id='dev-owner', team_code=team_code,
-          recorded_at=datetime.utcnow()).save()
+          recorded_at=datetime.now(timezone.utc)).save()
 
 
 def test_create_then_get_shows_comment(app, client, admin_headers):
@@ -44,7 +44,7 @@ def test_replay_same_id_is_idempotent(app, client, admin_headers):
 
 def test_ordering_oldest_first_and_after_pagination(app, client, admin_headers):
     _make_match('match-order')
-    base = datetime.utcnow()
+    base = datetime.now(timezone.utc)
     MatchComment(uuid='c1', match_uuid='match-order', body='first',
                  posted_at=base).save()
     MatchComment(uuid='c2', match_uuid='match-order', body='second',
@@ -63,7 +63,7 @@ def test_ordering_oldest_first_and_after_pagination(app, client, admin_headers):
 
 def test_limit_is_respected(app, client, admin_headers):
     _make_match('match-limit')
-    base = datetime.utcnow()
+    base = datetime.now(timezone.utc)
     for index in range(5):
         MatchComment(uuid=f'lc{index}', match_uuid='match-limit', body=str(index),
                      posted_at=base + timedelta(seconds=index)).save()
@@ -147,7 +147,7 @@ def test_tombstoned_comment_renders_deleted_author(app, client, admin_headers):
     _make_match('match-tomb')
     MatchComment(uuid='tomb-1', match_uuid='match-tomb', body='was here',
                  author_name='[deleted]', author_tombstoned=True,
-                 posted_at=datetime.utcnow()).save()
+                 posted_at=datetime.now(timezone.utc)).save()
 
     listing = client.get('/matches/match-tomb/comments', headers=admin_headers)
     comments = listing.get_json()['comments']
@@ -158,9 +158,9 @@ def test_tombstoned_comment_renders_deleted_author(app, client, admin_headers):
 def test_soft_deleted_comments_are_excluded(app, client, admin_headers):
     _make_match('match-del')
     MatchComment(uuid='visible', match_uuid='match-del', body='keep',
-                 posted_at=datetime.utcnow()).save()
+                 posted_at=datetime.now(timezone.utc)).save()
     MatchComment(uuid='hidden', match_uuid='match-del', body='gone', deleted=True,
-                 posted_at=datetime.utcnow()).save()
+                 posted_at=datetime.now(timezone.utc)).save()
 
     listing = client.get('/matches/match-del/comments', headers=admin_headers)
     ids = [comment['id'] for comment in listing.get_json()['comments']]
@@ -183,7 +183,7 @@ def test_entitlement_gate_on_post_only(app, client, device_key, membership,
     assert post_without.status_code == 402
     assert post_without.get_json() == {'reason': 'entitlement_required'}
 
-    grant_entitlement('dev-cmt-entitle', datetime.utcnow() + timedelta(days=30))
+    grant_entitlement('dev-cmt-entitle', datetime.now(timezone.utc) + timedelta(days=30))
     post_with = client.post('/matches/match-entitle/comments', headers=device_headers,
                             json={'id': 'e-1', 'body': 'hi'})
     assert post_with.status_code == 201

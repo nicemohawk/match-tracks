@@ -11,7 +11,7 @@ import base64
 import importlib.util
 import json
 import uuid as uuid_module
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from flask import jsonify
@@ -32,10 +32,10 @@ def _b64url(data: bytes) -> str:
 def _build_fake_jws(product_id=TEAM_PRODUCT_ID, expires_at=None, environment='Sandbox'):
     """An unsigned StoreKit-shaped JWS: fake x5c leaf, arbitrary signature."""
     if expires_at is None:
-        expires_at = datetime.utcnow() + timedelta(days=30)
-    # expires_at is a naive UTC datetime; .timestamp() would misinterpret it as
-    # local time, so compute the epoch offset from 1970-01-01 explicitly.
-    epoch_ms = int((expires_at - datetime(1970, 1, 1)).total_seconds() * 1000)
+        expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    # expires_at is an aware UTC datetime, so .timestamp() yields the correct
+    # POSIX seconds regardless of the host timezone.
+    epoch_ms = int(expires_at.timestamp() * 1000)
     header = {'alg': 'ES256', 'x5c': ['ZmFrZQ==']}
     payload = {
         'productId': product_id,
@@ -66,7 +66,7 @@ def _register_entitlement_route(app):
 def test_receipt_with_active_fake_verifier_returns_active_entitlement(client, app, device_key):
     device_uuid = 'enttest-active-device'
     headers = device_key('enttest-active-key', device_uuid)
-    future = datetime.utcnow() + timedelta(days=30)
+    future = datetime.now(timezone.utc) + timedelta(days=30)
 
     app.config['ENTITLEMENT_VERIFIER'] = lambda jws_string: {
         'product_id': TEAM_PRODUCT_ID, 'expires_at': future, 'environment': 'Sandbox'}
@@ -85,7 +85,7 @@ def test_receipt_with_active_fake_verifier_returns_active_entitlement(client, ap
 def test_receipt_with_expired_fake_verifier_returns_inactive(client, app, device_key):
     device_uuid = 'enttest-expired-device'
     headers = device_key('enttest-expired-key', device_uuid)
-    past = datetime.utcnow() - timedelta(days=1)
+    past = datetime.now(timezone.utc) - timedelta(days=1)
 
     app.config['ENTITLEMENT_VERIFIER'] = lambda jws_string: {
         'product_id': TEAM_PRODUCT_ID, 'expires_at': past, 'environment': 'Sandbox'}
@@ -149,7 +149,7 @@ def test_require_team_entitlement_enforced_allows_with_active_grant(
     path = _register_entitlement_route(app)
     device_uuid = 'enttest-enforce-granted-device'
     headers = device_key('enttest-enforce-granted-key', device_uuid)
-    grant_entitlement(device_uuid, datetime.utcnow() + timedelta(days=1))
+    grant_entitlement(device_uuid, datetime.now(timezone.utc) + timedelta(days=1))
 
     response = client.get(path, headers=headers)
     assert response.status_code == 200
@@ -161,7 +161,7 @@ def test_require_team_entitlement_enforced_denies_expired_grant(
     path = _register_entitlement_route(app)
     device_uuid = 'enttest-enforce-expired-device'
     headers = device_key('enttest-enforce-expired-key', device_uuid)
-    grant_entitlement(device_uuid, datetime.utcnow() - timedelta(days=1))
+    grant_entitlement(device_uuid, datetime.now(timezone.utc) - timedelta(days=1))
 
     response = client.get(path, headers=headers)
     assert response.status_code == 402
@@ -187,7 +187,7 @@ def test_require_team_entitlement_disabled_allows_without_grant(app, client, dev
 # --- default_jws_verifier ----------------------------------------------------
 
 def test_default_jws_verifier_with_fake_certificate(app):
-    future = datetime.utcnow() + timedelta(days=30)
+    future = datetime.now(timezone.utc) + timedelta(days=30)
     jws_string = _build_fake_jws(expires_at=future)
 
     with app.app_context():

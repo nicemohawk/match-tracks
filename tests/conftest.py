@@ -16,7 +16,7 @@ from match_tracks import app as flask_app
 # mongo_client_class argument instead.
 mongoengine.disconnect_all()
 mongoengine.connect('matchdb', mongo_client_class=mongomock.MongoClient,
-                    uuidRepresentation='standard')
+                    uuidRepresentation='standard', tz_aware=True)
 
 ADMIN_API_KEY = 'hi-bob'
 

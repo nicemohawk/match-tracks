@@ -5,6 +5,8 @@ A device may belong to many teams via the ``device_teams`` collection;
 counts as an implicit membership.
 """
 
+from datetime import timezone
+
 from flask import Blueprint, jsonify, request
 from mongoengine import NotUniqueError
 
@@ -132,7 +134,7 @@ def list_teams(identifier):
             'team_code': membership.team_code,
             'team_name': team.name if team else None,
             'archived': bool(team.archived) if team else False,
-            'joined_at': membership.joined_at.strftime(TIMESTAMP_FORMAT)
+            'joined_at': membership.joined_at.astimezone(timezone.utc).strftime(TIMESTAMP_FORMAT)
             if membership.joined_at else None,
         })
     return jsonify({'teams': teams})

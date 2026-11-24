@@ -7,7 +7,7 @@ detection and imagery-caching logic can be exercised without any real
 imagery license.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from match_tracks.models import CommunityField, SeedRequest
 from match_tracks.imagery import NullImageryProvider
@@ -106,7 +106,7 @@ def test_seed_request_stale_request_older_than_24h_is_accepted(app, client, devi
     assert first.status_code == 202
 
     stale_request = SeedRequest.objects.first()
-    stale_request.requested_at = datetime.utcnow() - timedelta(hours=25)
+    stale_request.requested_at = datetime.now(timezone.utc) - timedelta(hours=25)
     stale_request.save()
 
     second = client.post('/fields/seed-request', json={'lat': 40.0, 'lon': -74.0},

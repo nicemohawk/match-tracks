@@ -6,7 +6,7 @@ are idempotent by client-supplied id and server-stamp the author name (honoring
 the initials-only privacy flag) and post time.
 """
 
-from datetime import datetime
+from datetime import timezone
 
 from flask import Blueprint, jsonify, request
 
@@ -15,6 +15,7 @@ from match_tracks.auth import auth, current_principal, effective_device_id
 from match_tracks.models import Match, MatchComment, Player
 from match_tracks.privacy import display_name, player_display_name
 from match_tracks.rate_limit import rate_limited
+from match_tracks.timeutils import utcnow
 
 comments_blueprint = Blueprint('comments', __name__)
 
@@ -26,10 +27,13 @@ MAX_BODY_LENGTH = 1000
 
 
 def _format_timestamp(value):
-    """Serialize a datetime as ``...Z`` (UTC, second precision), or ``None``."""
+    """Serialize a datetime as ``...Z`` (UTC, second precision), or ``None``.
+
+    Normalizes to UTC first so a non-UTC-aware value can never mis-serialize.
+    """
     if value is None:
         return None
-    return value.strftime(TIMESTAMP_FORMAT)
+    return value.astimezone(timezone.utc).strftime(TIMESTAMP_FORMAT)
 
 
 def _comment_json(comment):
@@ -166,7 +170,7 @@ def post_comment(match_uuid):
         author_device=acting_device_id,
         author_name=author_name,
         body=body,
-        posted_at=datetime.utcnow(),
+        posted_at=utcnow(),
     )
     comment.save()
 

@@ -10,13 +10,14 @@ certificates (App Store Server API validation is the gold standard).
 
 import base64
 import json
-from datetime import datetime
+from datetime import timezone
 
 from flask import Blueprint, current_app, jsonify, request
 
 from match_tracks.auth import auth, current_principal, effective_device_id
 from match_tracks.memberships import actor_denial
 from match_tracks.models import Entitlement
+from match_tracks.timeutils import utcfromtimestamp, utcnow
 
 entitlements_blueprint = Blueprint('entitlements', __name__)
 
@@ -104,7 +105,7 @@ def default_jws_verifier(jws_string):
 
     return {
         'product_id': product_id,
-        'expires_at': datetime.utcfromtimestamp(expires_ms / 1000.0),
+        'expires_at': utcfromtimestamp(expires_ms / 1000.0),
         'environment': environment,
     }
 
@@ -212,13 +213,13 @@ def _verify_jws_signature(header, header_segment, payload_segment,
 
 def _require_certificate_currently_valid(certificate):
     """Raise InvalidReceipt when `certificate` is outside its validity window."""
-    now = datetime.utcnow()
-    try:  # cryptography >= 42 deprecates the naive properties
-        not_before = certificate.not_valid_before_utc.replace(tzinfo=None)
-        not_after = certificate.not_valid_after_utc.replace(tzinfo=None)
-    except AttributeError:
-        not_before = certificate.not_valid_before
-        not_after = certificate.not_valid_after
+    now = utcnow()  # aware UTC
+    try:  # cryptography >= 42 exposes aware-UTC properties
+        not_before = certificate.not_valid_before_utc
+        not_after = certificate.not_valid_after_utc
+    except AttributeError:  # older cryptography returns naive UTC
+        not_before = certificate.not_valid_before.replace(tzinfo=timezone.utc)
+        not_after = certificate.not_valid_after.replace(tzinfo=timezone.utc)
     if now < not_before or now > not_after:
         raise InvalidReceipt('certificate in x5c chain is expired or not yet valid')
 
@@ -258,7 +259,7 @@ def has_active_team_entitlement(device_id):
     team products (exact product-id match — never a substring test)."""
     if not device_id:
         return False
-    now = datetime.utcnow()
+    now = utcnow()
     team_products = allowed_team_product_ids()
     for entitlement in Entitlement.objects(device_id=device_id.lower()):
         if entitlement.product_id in team_products:
@@ -280,7 +281,7 @@ def require_team_entitlement():
 
 
 def _team_entitlement_json(device_id):
-    now = datetime.utcnow()
+    now = utcnow()
     team_products = allowed_team_product_ids()
     newest_expiry = None
     for entitlement in Entitlement.objects(device_id=device_id):
@@ -290,7 +291,7 @@ def _team_entitlement_json(device_id):
                 newest_expiry = entitlement.expires_at
     return {
         'active': bool(newest_expiry and newest_expiry > now),
-        'expires_at': newest_expiry.strftime(TIMESTAMP_FORMAT) if newest_expiry else None,
+        'expires_at': newest_expiry.astimezone(timezone.utc).strftime(TIMESTAMP_FORMAT) if newest_expiry else None,
     }
 
 

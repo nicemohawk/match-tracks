@@ -8,7 +8,7 @@ must recover them before the fit succeeds.
 """
 
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from match_tracks.formation import FORMATION_TEMPLATES
 from match_tracks.models import Match, Player
@@ -37,7 +37,7 @@ def _seed_four_three_three(app):
     """Create 11 players with jittered 2-match tracks around 4-3-3 slots."""
     template = FORMATION_TEMPLATES['4-3-3']
     rng = random.Random(JITTER_SEED)
-    within_window = datetime.utcnow() - timedelta(days=1)
+    within_window = datetime.now(timezone.utc) - timedelta(days=1)
     device_ids = []
 
     for slot_index, slot in enumerate(template):
@@ -73,7 +73,7 @@ def test_formation_detects_four_three_three(app, client, membership):
     # A stale match (outside the window) for an otherwise-unseen device must be
     # ignored; if counted it would add a twelfth slot.
     _make_match('formation-stale-device', 0.5, 0.5,
-                datetime.utcnow() - timedelta(days=400), 'stale')
+                datetime.now(timezone.utc) - timedelta(days=400), 'stale')
     headers = _reader_headers(app, membership)
 
     response = client.get(f'/teams/{TEAM_CODE}/formation', headers=headers)
@@ -94,7 +94,7 @@ def test_formation_detects_four_three_three(app, client, membership):
 def test_stale_matches_outside_window_are_ignored(app, client, membership):
     _seed_four_three_three(app)
     _make_match('formation-stale-device', 0.5, 0.5,
-                datetime.utcnow() - timedelta(days=400), 'stale')
+                datetime.now(timezone.utc) - timedelta(days=400), 'stale')
     headers = _reader_headers(app, membership)
 
     response = client.get(f'/teams/{TEAM_CODE}/formation', headers=headers)
@@ -105,7 +105,7 @@ def test_stale_matches_outside_window_are_ignored(app, client, membership):
 
 
 def test_fewer_than_five_players_returns_insufficient_data(app, client, membership):
-    within_window = datetime.utcnow() - timedelta(days=1)
+    within_window = datetime.now(timezone.utc) - timedelta(days=1)
     for index in range(4):
         device_id = f'sparse-device-{index}'
         _make_match(device_id, 0.2 + 0.1 * index, 0.5, within_window, '0')
@@ -118,7 +118,7 @@ def test_fewer_than_five_players_returns_insufficient_data(app, client, membersh
 
 
 def test_matches_missing_mean_coordinates_are_not_counted(app, client, membership):
-    within_window = datetime.utcnow() - timedelta(days=1)
+    within_window = datetime.now(timezone.utc) - timedelta(days=1)
     # Four fully-qualified devices...
     for index in range(4):
         _make_match(f'valid-device-{index}', 0.2 + 0.1 * index, 0.5,

@@ -3,7 +3,7 @@ consent-gated rosters, explicit team creation, and full device data deletion.
 """
 
 import uuid as uuid_module
-from datetime import datetime
+from datetime import timezone
 
 from flask import Blueprint, current_app, jsonify, request
 from mongoengine import NotUniqueError
@@ -14,6 +14,7 @@ from match_tracks.memberships import actor_denial, principal_owns_team
 from match_tracks.models import (CommunityField, Device, DeviceTeamMembership,
                                  Entitlement, LiveStatus, Match, MatchComment,
                                  Player, Team)
+from match_tracks.timeutils import utcnow
 
 privacy_blueprint = Blueprint('privacy', __name__)
 
@@ -64,12 +65,13 @@ def record_consent(identifier):
 
     device_id = str(identifier).lower()
     player = Player.objects(device_id=device_id).first() or Player(device_id=device_id)
-    player.consent_acknowledged_at = datetime.utcnow()
-    player.updated_at = datetime.utcnow()
+    player.consent_acknowledged_at = utcnow()
+    player.updated_at = utcnow()
     player.save()
 
     return jsonify({
-        'acknowledged_at': player.consent_acknowledged_at.strftime(TIMESTAMP_FORMAT),
+        'acknowledged_at': player.consent_acknowledged_at.astimezone(
+            timezone.utc).strftime(TIMESTAMP_FORMAT),
     })
 
 

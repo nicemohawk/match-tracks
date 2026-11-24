@@ -8,7 +8,7 @@ colliding with fixtures created by other test files running in the same
 process.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from match_tracks import field_service
 from match_tracks.models import (CommunityField, Device, DeviceTeamMembership, Entitlement,
@@ -126,7 +126,7 @@ def test_consent_blocked_truth_table():
     open_team = Team(code='privtest-open-team', requires_consent=False)
     gated_team = Team(code='privtest-gated-team', requires_consent=True)
 
-    consented_player = Player(device_id='privtest-consented', consent_acknowledged_at=datetime.utcnow())
+    consented_player = Player(device_id='privtest-consented', consent_acknowledged_at=datetime.now(timezone.utc))
     unconsented_player = Player(device_id='privtest-unconsented')
 
     assert consent_blocked(unconsented_player, open_team) is False
@@ -163,9 +163,9 @@ def test_delete_device_cascades_across_all_related_data(client, admin_headers, d
     Team(code=team_code).save()
 
     Match(uuid=new_uuid(), device_id=device_uuid, team_code=team_code,
-          recorded_at=datetime.utcnow(), track={'coordinates': []}, events=[], stats={}).save()
+          recorded_at=datetime.now(timezone.utc), track={'coordinates': []}, events=[], stats={}).save()
     Match(uuid=new_uuid(), device_id=device_uuid, team_code=team_code,
-          recorded_at=datetime.utcnow(), track={'coordinates': []}, events=[], stats={}).save()
+          recorded_at=datetime.now(timezone.utc), track={'coordinates': []}, events=[], stats={}).save()
     assert Match.objects(device_id=device_uuid).count() == 2
 
     other_contributor = new_uuid()
@@ -194,7 +194,7 @@ def test_delete_device_cascades_across_all_related_data(client, admin_headers, d
     DeviceTeamMembership(device_id=device_uuid, team_code=team_code).save()
     Player(device_id=device_uuid, name='Cascade Kid', team_code=team_code).save()
     Entitlement(device_id=device_uuid, product_id='com.nicemohawk.MatchTracker.team.monthly',
-                expires_at=datetime.utcnow() + timedelta(days=30), environment='test').save()
+                expires_at=datetime.now(timezone.utc) + timedelta(days=30), environment='test').save()
 
     delete_response = client.delete(f'/devices/{device_uuid}', headers=device_headers)
     assert delete_response.status_code == 202

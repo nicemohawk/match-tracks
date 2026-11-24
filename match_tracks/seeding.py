@@ -13,7 +13,7 @@ them (see ``docs/backend-v2-architecture.md`` §8).
 
 import os
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import timedelta
 from uuid import uuid4
 
 from flask import Blueprint, Response, current_app, jsonify, request
@@ -24,6 +24,7 @@ from match_tracks.geometry import FittedRect
 from match_tracks.imagery import get_imagery_provider, grid_cell_center
 from match_tracks.models import CommunityField, SeedRequest
 from match_tracks.rate_limit import rate_limited
+from match_tracks.timeutils import utcnow
 
 seeding_blueprint = Blueprint('seeding', __name__)
 
@@ -53,7 +54,7 @@ def create_seed_request():
 
     identity = _requester_identity()
 
-    cutoff = datetime.utcnow() - SEED_REQUEST_MINIMUM_INTERVAL
+    cutoff = utcnow() - SEED_REQUEST_MINIMUM_INTERVAL
     recent_request = SeedRequest.objects(
         device_id=identity, requested_at__gt=cutoff).first()
     if recent_request is not None:
