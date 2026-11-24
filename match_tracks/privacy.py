@@ -11,9 +11,10 @@ from mongoengine import NotUniqueError
 from match_tracks import field_service
 from match_tracks.auth import auth, effective_device_id
 from match_tracks.memberships import actor_denial, principal_owns_team
-from match_tracks.models import (CommunityField, Device, DeviceTeamMembership,
-                                 Entitlement, LiveStatus, Match, MatchComment,
-                                 Player, Team)
+from match_tracks.models import (CommunityField, Device, DeviceSecret,
+                                 DeviceTeamMembership, Entitlement, JoinRequest,
+                                 LiveStatus, Match, MatchComment, Player, Team,
+                                 TeamLineup, TeamNext)
 
 privacy_blueprint = Blueprint('privacy', __name__)
 
@@ -157,8 +158,41 @@ def delete_device_data(device_id):
     MatchComment.objects(author_device=normalized_device_id).update(
         set__author_tombstoned=True, set__author_name=TOMBSTONE_AUTHOR)
 
+    # V3 §7: clear this device's team footprint — membership, lineup slots,
+    # next-match entries, lineup authorship, pending requests and the device
+    # secret — and hand over captaincy on any team it led.
+    from match_tracks import memberships
+    device_memberships = list(
+        DeviceTeamMembership.objects(device_id=normalized_device_id))
+    member_ids = {m.member_id for m in device_memberships if m.member_id}
+    affected_teams = {m.team_code for m in device_memberships}
+
     LiveStatus.objects(device_id=normalized_device_id).delete()
     DeviceTeamMembership.objects(device_id=normalized_device_id).delete()
+    JoinRequest.objects(device_id=normalized_device_id).delete()
+    DeviceSecret.objects(device_id=normalized_device_id).delete()
+
+    for team_code in affected_teams:
+        lineup = TeamLineup.objects(team_code=team_code).first()
+        if lineup is not None:
+            kept = [slot for slot in (lineup.slots or [])
+                    if slot.get('member_id') not in member_ids]
+            changed = len(kept) != len(lineup.slots or [])
+            if lineup.updated_by_device == normalized_device_id:
+                lineup.updated_by_device = None
+                changed = True
+            if changed:
+                lineup.slots = kept
+                lineup.save()
+        nxt = TeamNext.objects(team_code=team_code).first()
+        if nxt is not None and nxt.entries:
+            kept_entries = [entry for entry in nxt.entries
+                            if entry.get('member_id') not in member_ids]
+            if len(kept_entries) != len(nxt.entries):
+                nxt.entries = kept_entries
+                nxt.save()
+        memberships.reassign_captain(team_code)
+
     Player.objects(device_id=normalized_device_id).delete()
     Entitlement.objects(device_id=normalized_device_id).delete()
     Device.objects(vendor_identifier=normalized_device_id).delete()
