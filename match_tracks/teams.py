@@ -152,15 +152,14 @@ def put_team(code):
     if not _valid_team_name(name):
         return jsonify({'reason': 'invalid_name'}), 400
 
-    # Captain only, except the first member may name a still-unnamed team (so a
-    # team started offline gets its name with the membership call).
+    # Captain only. The first member IS the captain (ensure_team_roles elects
+    # the earliest member), so "the first member may name a still-unnamed team"
+    # collapses into the captain check — a later player is refused.
     memberships.ensure_team_roles(canonical)
     is_captain = memberships.role_of(effective_device_id(), canonical) == 'captain'
     principal = memberships.current_principal()
     is_admin = bool(principal and principal.get('admin'))
-    first_member_naming = team.name is None and memberships.active_membership(
-        effective_device_id(), canonical) is not None
-    if not (is_captain or is_admin or first_member_naming):
+    if not (is_captain or is_admin):
         return jsonify({'reason': 'not_captain'}), 403
 
     team.name = name
@@ -359,10 +358,17 @@ def _generate_unique_code():
 # --- §4 lineup & next ------------------------------------------------------
 
 def _monotonic_updated_at(previous):
-    """Strictly-increasing (second-resolution) timestamp for optimistic locking."""
-    now = datetime.utcnow()
-    if previous is not None and now <= previous:
-        return previous + timedelta(seconds=1)
+    """Strictly-increasing SECOND-resolution timestamp for optimistic locking.
+
+    The If-Match guard compares formatted (second-precision) timestamps, so each
+    write must advance the formatted value even when two writes land in the same
+    wall-clock second.
+    """
+    now = datetime.utcnow().replace(microsecond=0)
+    if previous is not None:
+        previous = previous.replace(microsecond=0)
+        if now <= previous:
+            return previous + timedelta(seconds=1)
     return now
 
 

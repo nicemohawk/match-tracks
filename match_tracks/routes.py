@@ -7,7 +7,7 @@ from mongoengine.connection import get_connection
 
 from match_tracks import app
 from match_tracks import field_service, geometry
-from match_tracks.auth import auth, current_principal, principal_may_read_team
+from match_tracks.auth import auth, current_principal
 from match_tracks.db import first_or_404
 from match_tracks.models import (Device, DeviceSchema, SessionSchema, FieldSchema,
                                  Match, Team, Player, CommunityField)
@@ -579,8 +579,10 @@ def get_team_stats(code):
     if team is None:
         abort(404)
 
-    if not principal_may_read_team(current_principal(), canonical):
-        abort(403)
+    # V3 §3: a removed member gets {"reason":"removed"}; non-members not_a_member.
+    member_denial = memberships.require_member(canonical)
+    if member_denial:
+        return member_denial
 
     # V3 §0/§1/§3: expose only an opaque per-team member_id and role — never a
     # device id — and leave removed members' matches out of the team's totals.
