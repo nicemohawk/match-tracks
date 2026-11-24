@@ -110,6 +110,12 @@ def post_live_status(device_id):
     live_status.y = json_data.get('y')
     live_status.save()
 
+    # §11: append any live-tagged events to the team event log (provisional),
+    # only now that the sequence guard has passed (a stale POST never appends).
+    from match_tracks.events import ingest_live_events
+    ingest_live_events(team_code, normalized_match_uuid, normalized_device_id,
+                       json_data.get('new_events'))
+
     return '', 204
 
 

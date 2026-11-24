@@ -40,6 +40,7 @@ from match_tracks.memberships import memberships_blueprint
 from match_tracks.team_admin import team_admin_blueprint
 from match_tracks.entitlements import entitlements_blueprint
 from match_tracks.seeding import seeding_blueprint
+from match_tracks.events import events_blueprint
 
 app.register_blueprint(live_blueprint)
 app.register_blueprint(comments_blueprint)
@@ -49,3 +50,4 @@ app.register_blueprint(memberships_blueprint)
 app.register_blueprint(team_admin_blueprint)
 app.register_blueprint(entitlements_blueprint)
 app.register_blueprint(seeding_blueprint)
+app.register_blueprint(events_blueprint)

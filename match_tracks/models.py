@@ -174,6 +174,31 @@ class Match(db.Document):
 
 # V2 documents (see docs/backend-v2-architecture.md — the binding contract)
 
+class MatchEvent(db.Document):
+    """One tagged match event, indexed for the team event timeline (V2 §11).
+
+    Fed provisionally by ``new_events`` on ``POST /devices/<id>/live`` during a
+    match, then reconciled authoritatively from ``sessions.events[]`` when the
+    match is uploaded (uploaded copy replaces the provisional one, keyed by
+    event id). ``coach_label`` is the coach annotation — kept separate from the
+    player's ``note`` and preserved across reconciliation. ``device_id`` is the
+    author, resolved to a name (initials_only-respecting) at read time.
+    """
+    meta = {'collection': 'match_events',
+            'indexes': ['match_uuid', ('team_code', 'date')]}
+    event_uuid = db.StringField(primary_key=True)   # lowercase event id
+    match_uuid = db.StringField(required=True)
+    team_code = db.StringField(null=True)
+    device_id = db.StringField(null=True)           # author device, for player_name
+    kind = db.StringField(null=True)                # raw kind string, passthrough
+    date = db.DateTimeField(null=True)
+    note = db.StringField(null=True)                # player's own note
+    source = db.StringField(null=True)              # 'manual'/'automatic' (None => manual)
+    coach_label = db.StringField(null=True)         # coach annotation (§11)
+    provisional = db.BooleanField(default=True)     # True = live-log only; False = reconciled
+    created_at = db.DateTimeField(default=datetime.utcnow)
+
+
 class LiveStatus(db.Document):
     """Latest live-match snapshot per device; overwritten on every accepted update."""
     meta = {'collection': 'live_status', 'indexes': ['team_code']}
